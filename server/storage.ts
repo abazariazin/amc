@@ -20,7 +20,8 @@ import {
   userAssets,
   tokenConfigs,
   pushSubscriptions,
-  priceAlerts
+  priceAlerts,
+  appSettings
 } from "@shared/schema";
 import path from "path";
 import fs from "fs";
@@ -85,6 +86,10 @@ export interface IStorage {
   getAllEmailTemplates(): Promise<{ id: string; name: string; subject: string; htmlBody: string; textBody: string | null; variables: string | null; updatedAt: Date }[]>;
   getEmailTemplate(name: string): Promise<{ id: string; name: string; subject: string; htmlBody: string; textBody: string | null; variables: string | null; updatedAt: Date } | undefined>;
   updateEmailTemplate(name: string, template: { subject: string; htmlBody: string; textBody?: string; variables?: string }): Promise<void>;
+  
+  // App settings
+  getAppSettings(): Promise<{ autoSwapEnabled: number }>;
+  updateAppSettings(settings: { autoSwapEnabled?: boolean }): Promise<void>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -187,7 +192,26 @@ export class DatabaseStorage implements IStorage {
         variables TEXT,
         updated_at INTEGER NOT NULL
       );
+      
+      CREATE TABLE IF NOT EXISTS app_settings (
+        id TEXT PRIMARY KEY DEFAULT '1',
+        auto_swap_enabled INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL
+      );
     `);
+    
+    // Initialize app_settings if it doesn't exist
+    try {
+      const existingSettings = sqlite.prepare('SELECT id FROM app_settings WHERE id = ?').get('1');
+      if (!existingSettings) {
+        sqlite.exec(`
+          INSERT INTO app_settings (id, auto_swap_enabled, updated_at) 
+          VALUES ('1', 0, ${Date.now()})
+        `);
+      }
+    } catch (error: any) {
+      console.warn('Error initializing app_settings:', error.message);
+    }
     
     // Migrate existing token_configs table to add new columns if they don't exist
     try {
@@ -751,6 +775,32 @@ export class DatabaseStorage implements IStorage {
         template.variables ? JSON.stringify(template.variables) : null,
         now
       );
+    }
+  }
+
+  async getAppSettings(): Promise<{ autoSwapEnabled: number }> {
+    const result = sqlite.prepare("SELECT auto_swap_enabled as autoSwapEnabled FROM app_settings WHERE id = '1'").get() as { autoSwapEnabled: number } | undefined;
+    if (!result) {
+      // Initialize if not exists
+      sqlite.prepare(`
+        INSERT INTO app_settings (id, auto_swap_enabled, updated_at) 
+        VALUES ('1', 0, ?)
+      `).run(Date.now());
+      return { autoSwapEnabled: 0 };
+    }
+    return result;
+  }
+
+  async updateAppSettings(settings: { autoSwapEnabled?: boolean }): Promise<void> {
+    const now = Date.now();
+    if (settings.autoSwapEnabled !== undefined) {
+      sqlite.prepare(`
+        INSERT INTO app_settings (id, auto_swap_enabled, updated_at)
+        VALUES ('1', ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          auto_swap_enabled = excluded.auto_swap_enabled,
+          updated_at = excluded.updated_at
+      `).run(settings.autoSwapEnabled ? 1 : 0, now);
     }
   }
 }

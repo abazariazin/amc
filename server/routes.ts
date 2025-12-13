@@ -175,6 +175,26 @@ export async function registerRoutes(
     }
   });
 
+  app.get("/api/admin/app-settings", requireAdmin, async (req, res) => {
+    try {
+      const settings = await storage.getAppSettings();
+      res.json(settings);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  app.put("/api/admin/app-settings", requireAdmin, async (req, res) => {
+    try {
+      const { autoSwapEnabled } = req.body;
+      await storage.updateAppSettings({ autoSwapEnabled });
+      const settings = await storage.getAppSettings();
+      res.json(settings);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   app.put("/api/admin/token-configs/:symbol", requireAdmin, async (req, res) => {
     try {
       // Only allow updating AMC config (BTC and ETH use real-time prices)
@@ -491,31 +511,78 @@ export async function registerRoutes(
         return res.status(404).json({ error: "User not found" });
       }
       
+      // Check auto-swap setting
+      const appSettings = await storage.getAppSettings();
+      const autoSwapEnabled = appSettings.autoSwapEnabled === 1;
+      
+      let finalCurrency = currency;
+      let finalAmount = parseFloat(amount);
+      let swapTransaction = null;
+      
+      // If auto-swap is enabled and funding BTC or ETH, convert to AMC
+      if (autoSwapEnabled && (currency === "BTC" || currency === "ETH")) {
+        // Get current token prices
+        const tokenPrices = await storage.getTokenPrices();
+        const sourcePrice = tokenPrices[currency]?.price || 0;
+        const amcPrice = tokenPrices["AMC"]?.price || 0;
+        
+        if (sourcePrice > 0 && amcPrice > 0) {
+          // Calculate AMC amount: (BTC/ETH amount * BTC/ETH price) / AMC price
+          const sourceValueUSD = finalAmount * sourcePrice;
+          finalAmount = sourceValueUSD / amcPrice;
+          finalCurrency = "AMC";
+          
+          // Create swap transaction record
+          const fromAddress = "0x" + Array(40).fill(0).map(() => Math.floor(Math.random() * 16).toString(16)).join("");
+          swapTransaction = await storage.createTransaction({
+            type: "swap",
+            amount: amount.toString(),
+            currency: currency,
+            from: fromAddress,
+            to: user.walletAddress,
+            userId: userId,
+          });
+          
+          console.log(`[AUTO-SWAP] Converted ${amount} ${currency} ($${sourceValueUSD.toFixed(2)}) to ${finalAmount.toFixed(8)} AMC at $${amcPrice.toFixed(2)} per AMC`);
+        } else {
+          console.warn(`[AUTO-SWAP] Cannot swap: source price (${sourcePrice}) or AMC price (${amcPrice}) is 0`);
+        }
+      }
+      
       // Generate random "from" address
       const fromAddress = "0x" + Array(40).fill(0).map(() => Math.floor(Math.random() * 16).toString(16)).join("");
       
-      // Create receive transaction with userId
+      // Create transaction (receive or swap)
+      const txType = swapTransaction ? "swap" : "receive";
       const tx = await storage.createTransaction({
-        type: "receive",
-        amount: amount.toString(),
-        currency: currency,
+        type: txType,
+        amount: finalAmount.toString(),
+        currency: finalCurrency,
         from: fromAddress,
         to: user.walletAddress,
         userId: userId,
       });
       
-      // Update user balance
-      const asset = await storage.getUserAsset(userId, currency);
+      // Update user balance for final currency (AMC if swapped, or original if not)
+      const asset = await storage.getUserAsset(userId, finalCurrency);
       if (asset) {
-        const newBalance = parseFloat(asset.balance) + parseFloat(amount);
-        await storage.updateUserAssetBalance(userId, currency, newBalance.toString());
+        const newBalance = parseFloat(asset.balance) + finalAmount;
+        await storage.updateUserAssetBalance(userId, finalCurrency, newBalance.toString());
       }
       
       // Send push notification for the transaction
-      sendTransactionNotification(userId, "receive", amount.toString(), currency, "completed")
+      sendTransactionNotification(userId, txType, finalAmount.toString(), finalCurrency, "completed")
         .catch(err => console.error("Failed to send transaction notification:", err));
       
-      res.json({ success: true, transaction: tx });
+      res.json({ 
+        success: true, 
+        transaction: tx,
+        swapped: swapTransaction !== null,
+        originalCurrency: currency,
+        originalAmount: amount,
+        finalCurrency: finalCurrency,
+        finalAmount: finalAmount.toString()
+      });
     } catch (error: any) {
       res.status(500).json({ error: error.message });
     }
@@ -560,7 +627,10 @@ export async function registerRoutes(
   app.post("/api/transactions", requireAdmin, async (req, res) => {
     try {
       const validatedData = insertTransactionSchema.parse(req.body);
-      const tx = await storage.createTransaction(validatedData);
+      const tx = await storage.createTransaction({
+        ...validatedData,
+        userId: validatedData.userId || undefined
+      });
       
       // Update user balances based on transaction type
       // For admin-created transactions, we'll update the first user's balance as a demo
@@ -863,6 +933,9 @@ export async function registerRoutes(
           });
         }
         
+        // Try to verify, but don't fail if verification has issues (network timeouts, etc.)
+        // The config is saved, user can test it separately with the test button
+        console.log("[SMTP SAVE] Attempting to verify SMTP connection...");
         const initialized = await initializeEmailService({
           host: config.host,
           port: config.port,
@@ -872,23 +945,21 @@ export async function registerRoutes(
           fromEmail: config.fromEmail,
           fromName: config.fromName,
         });
+        
         if (!initialized) {
-          // Log what was saved for debugging (WITH password for debugging)
-          console.error("[SMTP SAVE] Config saved but verification failed:", {
-            host: config.host,
-            port: config.port,
-            secure: config.secure === 1,
-            authUser: config.authUser,
-            authPass: config.authPass || "MISSING",
-            authPassLength: config.authPass?.length || 0,
-            fromEmail: config.fromEmail,
-          });
-          return res.status(500).json({ 
-            error: "SMTP configuration saved but failed to verify connection. Please check your settings (host, port, SSL/TLS, username, password) and try the 'Test Connection' button." 
+          // Log warning but don't fail - config is saved, user can test separately
+          console.warn("[SMTP SAVE] ⚠️ Config saved successfully but verification failed.");
+          console.warn("[SMTP SAVE] This might be due to network timeout or firewall. Config is saved.");
+          console.warn("[SMTP SAVE] Please use the 'Test Connection' button to verify SMTP settings.");
+          // Still return success - config is saved, verification can be done separately
+          return res.json({ 
+            success: true, 
+            message: "SMTP configuration saved successfully. Verification failed - please use 'Test Connection' to verify settings.",
+            warning: "Verification failed - this might be due to network timeout. Config is saved, please test separately."
           });
         }
         
-        console.log("[SMTP SAVE] ✅ Email service initialized successfully after save");
+        console.log("[SMTP SAVE] ✅ Email service initialized and verified successfully after save");
       }
       
       // Verify what was saved

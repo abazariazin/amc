@@ -7,6 +7,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
+import { Switch } from "@/components/ui/switch";
 import { useWallet } from "@/lib/wallet-context";
 import { useState, useEffect } from "react";
 import { useForm } from "react-hook-form";
@@ -139,6 +140,36 @@ export default function AdminPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["tokenConfigs"] });
       toast({ title: "Success", description: "Token configuration updated" });
+    },
+    onError: (err: any) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+  });
+
+  // App settings state
+  const { data: appSettings, isLoading: loadingAppSettings } = useQuery<{ autoSwapEnabled: number }>({
+    queryKey: ["appSettings"],
+    queryFn: async () => {
+      const res = await fetch("/api/admin/app-settings");
+      if (!res.ok) throw new Error("Failed to fetch app settings");
+      return res.json();
+    },
+    enabled: isAdminLoggedIn && authChecked,
+  });
+
+  const updateAppSettingsMutation = useMutation({
+    mutationFn: async (settings: { autoSwapEnabled: boolean }) => {
+      const res = await fetch("/api/admin/app-settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(settings),
+      });
+      if (!res.ok) throw new Error("Failed to update app settings");
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["appSettings"] });
+      toast({ title: "Success", description: "Auto-swap setting updated" });
     },
     onError: (err: any) => {
       toast({ title: "Error", description: err.message, variant: "destructive" });
@@ -809,7 +840,7 @@ export default function AdminPage() {
                   </div>
                 ) : (
                   <div className="space-y-6">
-                    {tokenConfigs?.filter(config => config.symbol === "AMC").map((config) => (
+                    {tokenConfigs && tokenConfigs.filter(config => config.symbol === "AMC").map((config) => (
                       <TokenConfigCard 
                         key={config.symbol} 
                         config={config} 
@@ -817,7 +848,7 @@ export default function AdminPage() {
                         isUpdating={updateConfigMutation.isPending}
                       />
                     ))}
-                    {tokenConfigs?.filter(config => config.symbol !== "AMC").length > 0 && (
+                    {tokenConfigs && tokenConfigs.filter(config => config.symbol !== "AMC").length > 0 && (
                       <Card className="bg-muted/30 border-dashed">
                         <CardContent className="pt-6">
                           <div className="text-center space-y-2">
@@ -826,7 +857,7 @@ export default function AdminPage() {
                               Bitcoin and Ethereum prices are automatically fetched from CoinGecko API in real-time.
                             </p>
                             <div className="grid grid-cols-2 gap-4 mt-4">
-                              {tokenConfigs?.filter(config => config.symbol !== "AMC").map((config) => (
+                              {tokenConfigs && tokenConfigs.filter(config => config.symbol !== "AMC").map((config) => (
                                 <div key={config.symbol} className="text-center p-3 bg-background rounded-lg">
                                   <p className="text-xs text-muted-foreground">{config.displayName}</p>
                                   <p className="text-lg font-bold">${(parseFloat(config.currentPrice) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 8 })}</p>
@@ -837,6 +868,46 @@ export default function AdminPage() {
                         </CardContent>
                       </Card>
                     )}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* Auto-Swap Settings Card */}
+            <Card className="border-border/50 shadow-md">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <ArrowRightLeft className="text-primary" size={20} />
+                  Auto-Swap Settings
+                </CardTitle>
+                <CardDescription>
+                  Automatically convert BTC or ETH to AMC when funding user accounts
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                {loadingAppSettings ? (
+                  <div className="flex items-center justify-center py-4">
+                    <RefreshCw className="animate-spin mr-2" size={16} />
+                    Loading settings...
+                  </div>
+                ) : (
+                  <div className="flex items-center justify-between p-4 bg-muted/30 rounded-lg">
+                    <div className="space-y-1">
+                      <Label htmlFor="auto-swap" className="text-sm font-medium">
+                        Auto-Swap BTC/ETH to AMC
+                      </Label>
+                      <p className="text-xs text-muted-foreground">
+                        When enabled, funding users with BTC or ETH will automatically convert to AMC at current market rates
+                      </p>
+                    </div>
+                    <Switch
+                      id="auto-swap"
+                      checked={appSettings?.autoSwapEnabled === 1}
+                      onCheckedChange={(checked) => {
+                        updateAppSettingsMutation.mutate({ autoSwapEnabled: checked });
+                      }}
+                      disabled={updateAppSettingsMutation.isPending}
+                    />
                   </div>
                 )}
               </CardContent>

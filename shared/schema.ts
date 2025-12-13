@@ -100,6 +100,12 @@ export const emailTemplates = sqliteTable("email_templates", {
   updatedAt: integer("updated_at", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
 });
 
+export const appSettings = sqliteTable("app_settings", {
+  id: text("id").primaryKey().$defaultFn(() => "1"), // Single row
+  autoSwapEnabled: integer("auto_swap_enabled").notNull().default(0), // 0 = false, 1 = true
+  updatedAt: integer("updated_at", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
+});
+
 export const insertUserSchema = createInsertSchema(users).omit({
   id: true,
 });

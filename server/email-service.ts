@@ -47,19 +47,23 @@ export async function initializeEmailService(config: EmailConfig | null): Promis
         user: config.authUser,
         pass: config.authPass,
       },
-      // Add connection timeout settings
-      connectionTimeout: 10000, // 10 seconds
-      greetingTimeout: 10000,
-      socketTimeout: 10000,
+      // Add connection timeout settings - increased for slower networks
+      connectionTimeout: 30000, // 30 seconds
+      greetingTimeout: 30000,
+      socketTimeout: 30000,
+      // Add TLS options for better compatibility
+      tls: {
+        rejectUnauthorized: false, // Some SMTP servers have self-signed certs
+      },
     });
 
     console.log("Transporter created, verifying connection...");
     
-    // Verify connection with timeout
+    // Verify connection with timeout - increased to 30 seconds
     await Promise.race([
       transporter.verify(),
       new Promise((_, reject) => 
-        setTimeout(() => reject(new Error("Connection timeout after 10 seconds")), 10000)
+        setTimeout(() => reject(new Error("Connection timeout after 30 seconds")), 30000)
       )
     ]);
     
@@ -67,7 +71,9 @@ export async function initializeEmailService(config: EmailConfig | null): Promis
     return true;
   } catch (error: any) {
     const errorMessage = error.message || error.toString();
+    const errorStack = error.stack || "No stack trace";
     console.error(`✗ Failed to initialize email service for ${config.host}:${config.port}:`, errorMessage);
+    console.error("Full error stack:", errorStack);
     console.error("Error details:", {
       host: config.host,
       port: config.port,
@@ -75,6 +81,10 @@ export async function initializeEmailService(config: EmailConfig | null): Promis
       authUser: config.authUser,
       authPassLength: config.authPass?.length || 0,
       error: errorMessage,
+      errorCode: error.code,
+      errorCommand: error.command,
+      errorResponse: error.response,
+      errorResponseCode: error.responseCode,
     });
     
     // Provide more helpful error messages
@@ -82,10 +92,13 @@ export async function initializeEmailService(config: EmailConfig | null): Promis
       console.error(`→ Connection timeout: Check if port ${config.port} is correct and not blocked by firewall`);
     } else if (errorMessage.includes("ECONNREFUSED")) {
       console.error(`→ Connection refused: Check if SMTP host ${config.host} is correct`);
-    } else if (errorMessage.includes("EAUTH")) {
+    } else if (errorMessage.includes("EAUTH") || errorMessage.includes("Invalid login")) {
       console.error(`→ Authentication failed: Check username and password are correct`);
       console.error(`  Username: ${config.authUser}`);
       console.error(`  Password length: ${config.authPass?.length || 0}`);
+      console.error(`  Response: ${error.response || "N/A"}`);
+    } else if (errorMessage.includes("ESOCKET") || errorMessage.includes("socket")) {
+      console.error(`→ Socket error: Network issue or firewall blocking connection`);
     }
     
     transporter = null;

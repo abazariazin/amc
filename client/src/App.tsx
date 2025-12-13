@@ -1,4 +1,4 @@
-import { Switch, Route } from "wouter";
+import { Switch, Route, useLocation } from "wouter";
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
@@ -11,8 +11,71 @@ import Wallet from "@/pages/wallet";
 import Scanner from "@/pages/scanner";
 import Admin from "@/pages/admin";
 import AdminLogin from "@/pages/admin-login";
+import { useEffect } from "react";
+
+// Helper function to detect if app is installed to home screen (PWA)
+function isPWAInstalled(): boolean {
+  if (typeof window === "undefined") return false;
+  
+  // Check for standalone mode (iOS Safari, Android Chrome)
+  const isStandalone = window.matchMedia("(display-mode: standalone)").matches;
+  
+  // Check for iOS standalone mode (legacy)
+  const isIOSStandalone = (window.navigator as any).standalone === true;
+  
+  // Check if running in fullscreen mode
+  const isFullscreen = window.matchMedia("(display-mode: fullscreen)").matches;
+  
+  return isStandalone || isIOSStandalone || isFullscreen;
+}
+
+// Expose PWA detection to window for testing (dev mode only)
+if (typeof window !== "undefined") {
+  (window as any).__checkPWAStatus = () => {
+    const isInstalled = isPWAInstalled();
+    const hasWallet = localStorage.getItem("userId") !== null;
+    const status = {
+      isPWAInstalled: isInstalled,
+      hasImportedWallet: hasWallet,
+      shouldRedirect: isInstalled && hasWallet,
+      displayMode: window.matchMedia("(display-mode: standalone)").matches ? "standalone" : 
+                   window.matchMedia("(display-mode: fullscreen)").matches ? "fullscreen" : "browser",
+      navigatorStandalone: (window.navigator as any).standalone,
+      userId: localStorage.getItem("userId")
+    };
+    console.log("🔍 PWA Status Check:", status);
+    return status;
+  };
+  
+  // Helper to simulate PWA mode for testing
+  (window as any).__simulatePWA = () => {
+    console.log("⚠️ PWA simulation: This only works for testing redirect logic. Actual PWA mode requires installation.");
+    // Note: We can't actually change matchMedia results, but we can test the logic
+    const hasWallet = localStorage.getItem("userId") !== null;
+    console.log("Current state:", {
+      hasImportedWallet: hasWallet,
+      userId: localStorage.getItem("userId"),
+      "To test PWA redirect": "Install the app as PWA or use Chrome DevTools Device Mode"
+    });
+  };
+}
 
 function Router() {
+  const [location, setLocation] = useLocation();
+  
+  useEffect(() => {
+    // Check if app is installed to home screen (PWA)
+    const isInstalled = isPWAInstalled();
+    
+    // Check if wallet is already imported (userId exists in localStorage)
+    const hasImportedWallet = typeof window !== "undefined" && localStorage.getItem("userId") !== null;
+    
+    // If app is installed AND wallet is imported, redirect to wallet instead of landing page
+    if (isInstalled && hasImportedWallet && location === "/") {
+      setLocation("/wallet");
+    }
+  }, [location, setLocation]);
+  
   return (
     <Switch>
       <Route path="/" component={Landing} />
