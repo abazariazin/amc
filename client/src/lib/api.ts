@@ -4,6 +4,7 @@ export async function apiRequest(method: string, url: string, body?: any): Promi
   const options: RequestInit = {
     method,
     headers: { "Content-Type": "application/json" },
+    credentials: "include", // Include cookies for session management
   };
   if (body) {
     options.body = JSON.stringify(body);

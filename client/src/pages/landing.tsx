@@ -3,7 +3,9 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
-import { Shield, Wallet, Download, Plus, Loader2, AlertCircle, Smartphone, Share, MoreVertical } from "lucide-react";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Shield, Wallet, Download, Plus, Loader2, AlertCircle, Smartphone, Share, MoreVertical, Mail, Lock, AlertTriangle, Clock } from "lucide-react";
 import { useLocation } from "wouter";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/api";
@@ -26,6 +28,18 @@ export default function LandingPage() {
   const [isMobile, setIsMobile] = useState(false);
   const [isIOS, setIsIOS] = useState(false);
   const [pendingRedirect, setPendingRedirect] = useState(false);
+  const [showImportProgress, setShowImportProgress] = useState(false);
+  const [importProgress, setImportProgress] = useState(0);
+  const [importStage, setImportStage] = useState(0);
+  const [showOTPModal, setShowOTPModal] = useState(false);
+  const [showEmailModal, setShowEmailModal] = useState(false);
+  const [otpEmail, setOtpEmail] = useState("");
+  const [otpCode, setOtpCode] = useState("");
+  const [otpExpiresAt, setOtpExpiresAt] = useState<number | null>(null);
+  const [otpTimeLeft, setOtpTimeLeft] = useState<number>(600); // 10 minutes in seconds
+  const [pendingSeedPhrase, setPendingSeedPhrase] = useState<string | null>(null);
+  const [isRequestingOTP, setIsRequestingOTP] = useState(false);
+  const [isVerifyingOTP, setIsVerifyingOTP] = useState(false);
 
   useEffect(() => {
     const checkMobile = () => {
@@ -37,6 +51,219 @@ export default function LandingPage() {
     };
     checkMobile();
   }, []);
+
+  const handleImportSubmitWithPhrase = async (phrase: string) => {
+    if (!phrase.trim()) {
+      toast({ title: "Error", description: "Invalid seed phrase", variant: "destructive" });
+      setIsImporting(false);
+      return;
+    }
+
+    setIsImporting(true);
+    setShowImportProgress(true);
+    setImportProgress(0);
+    setImportStage(0);
+    
+    // Define stages with progress thresholds
+    const stages = [15, 30, 45, 60, 75, 90, 100];
+    const stageMessages = [
+      "Validating seed phrase...",
+      "Decrypting wallet data...",
+      "Verifying wallet integrity...",
+      "Loading account balance...",
+      "Synchronizing transactions...",
+      "Finalizing import...",
+      "Complete!"
+    ];
+    
+    // Animate progress over 10 seconds (10000ms)
+    const totalDuration = 10000;
+    const updateInterval = 50; // Update every 50ms for smooth animation
+    const progressPerUpdate = 100 / (totalDuration / updateInterval);
+    let currentStage = 0;
+    let progressValue = 0;
+    
+    const progressInterval = setInterval(() => {
+      progressValue += progressPerUpdate;
+      const newProgress = Math.min(progressValue, 100);
+      setImportProgress(newProgress);
+      
+      // Update stage when progress threshold is reached
+      if (currentStage < stages.length - 1 && newProgress >= stages[currentStage]) {
+        currentStage++;
+        setImportStage(currentStage);
+      }
+    }, updateInterval);
+    
+    try {
+      // Start API call after a short delay (1 second)
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      
+      const response = await apiRequest("POST", "/api/auth/import-wallet", { 
+        seedPhrase: phrase.trim() 
+      });
+      const data = await response.json();
+      
+      // Wait for remaining animation time
+      const elapsed = 1000; // Time already elapsed
+      const remaining = Math.max(0, totalDuration - elapsed);
+      await new Promise(resolve => setTimeout(resolve, remaining));
+      
+      clearInterval(progressInterval);
+      setImportProgress(100);
+      setImportStage(stages.length - 1);
+      
+      // Small delay before closing
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      if (data.success) {
+        setAuthenticatedUser(data.userId);
+        // Clear stored seed phrase after successful import (no longer needed)
+        localStorage.removeItem("pendingSeedPhrase");
+        setShowImportProgress(false);
+        setIsImportOpen(false);
+        setPendingRedirect(true);
+        // Navigation will happen via useEffect when user is loaded
+      } else {
+        clearInterval(progressInterval);
+        setShowImportProgress(false);
+        toast({ title: "Import Failed", description: data.error || "Invalid seed phrase", variant: "destructive" });
+        // Don't clear stored seed phrase on failure - user might want to try again
+      }
+    } catch (error: any) {
+      clearInterval(progressInterval);
+      setShowImportProgress(false);
+      toast({ title: "Import Failed", description: error.message || "Invalid seed phrase", variant: "destructive" });
+      // Don't clear stored seed phrase on error - user might want to try again
+    } finally {
+      setIsImporting(false);
+      setImportProgress(0);
+      setImportStage(0);
+    }
+  };
+
+  // OTP countdown timer
+  useEffect(() => {
+    if (otpExpiresAt && showOTPModal) {
+      const interval = setInterval(() => {
+        const now = Date.now();
+        const remaining = Math.max(0, Math.floor((otpExpiresAt - now) / 1000));
+        setOtpTimeLeft(remaining);
+        
+        if (remaining === 0) {
+          clearInterval(interval);
+        }
+      }, 1000);
+      
+      return () => clearInterval(interval);
+    }
+  }, [otpExpiresAt, showOTPModal]);
+
+  // Check for auto-import from email link or stored seed phrase
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    
+    // First, check URL parameter (from email link)
+    const urlParams = new URLSearchParams(window.location.search);
+    const importParam = urlParams.get("import");
+    
+    if (importParam && !isImporting && !showEmailModal && !showOTPModal) {
+      try {
+        // Decode base64 seed phrase
+        const decodedSeedPhrase = atob(importParam);
+        
+        // Store seed phrase temporarily
+        setPendingSeedPhrase(decodedSeedPhrase);
+        localStorage.setItem("pendingSeedPhrase", decodedSeedPhrase);
+        
+        // Show email modal for OTP verification
+        setShowEmailModal(true);
+        
+        // Clean up URL parameter
+        window.history.replaceState({}, document.title, window.location.pathname);
+      } catch (error) {
+        console.error("Failed to decode seed phrase from URL:", error);
+        toast({ title: "Error", description: "Invalid import link", variant: "destructive" });
+      }
+    } else {
+      // Check localStorage for pending seed phrase (PWA installation)
+      const storedSeedPhrase = localStorage.getItem("pendingSeedPhrase");
+      const storedUserId = localStorage.getItem("userId");
+      
+      // Only show email modal if no user is logged in and we have a stored seed phrase
+      if (storedSeedPhrase && !storedUserId && !isImporting && !showEmailModal && !showOTPModal) {
+        // Show email modal for OTP verification
+        setPendingSeedPhrase(storedSeedPhrase);
+        setShowEmailModal(true);
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isImporting, showEmailModal, showOTPModal]);
+
+  const handleRequestOTP = async () => {
+    if (!otpEmail || !pendingSeedPhrase) {
+      toast({ title: "Error", description: "Email is required", variant: "destructive" });
+      return;
+    }
+    
+    setIsRequestingOTP(true);
+    try {
+      const response = await apiRequest("POST", "/api/auth/request-otp", {
+        email: otpEmail.trim(),
+        seedPhrase: pendingSeedPhrase
+      });
+      const data = await response.json();
+      
+      if (data.success) {
+        setShowEmailModal(false);
+        setShowOTPModal(true);
+        setOtpExpiresAt(data.expiresAt);
+        setOtpTimeLeft(600); // 10 minutes
+        toast({ title: "OTP Sent", description: "Check your email for the verification code" });
+      } else {
+        toast({ title: "Error", description: data.error || "Failed to send OTP", variant: "destructive" });
+      }
+    } catch (error: any) {
+      toast({ title: "Error", description: error.message || "Failed to send OTP", variant: "destructive" });
+    } finally {
+      setIsRequestingOTP(false);
+    }
+  };
+
+  const handleVerifyOTP = async () => {
+    if (!otpCode || otpCode.length !== 6) {
+      toast({ title: "Error", description: "Please enter a valid 6-digit code", variant: "destructive" });
+      return;
+    }
+    
+    if (otpTimeLeft === 0) {
+      toast({ title: "Error", description: "OTP code has expired. Please request a new one.", variant: "destructive" });
+      return;
+    }
+    
+    setIsVerifyingOTP(true);
+    try {
+      const response = await apiRequest("POST", "/api/auth/verify-otp", {
+        email: otpEmail.trim(),
+        code: otpCode.trim()
+      });
+      const data = await response.json();
+      
+      if (data.success) {
+        // OTP verified, proceed with import
+        setShowOTPModal(false);
+        if (pendingSeedPhrase) {
+          handleImportSubmitWithPhrase(pendingSeedPhrase);
+        }
+      } else {
+        toast({ title: "Error", description: data.error || "Invalid OTP code", variant: "destructive" });
+      }
+    } catch (error: any) {
+      toast({ title: "Error", description: error.message || "Failed to verify OTP", variant: "destructive" });
+    } finally {
+      setIsVerifyingOTP(false);
+    }
+  };
 
   // Redirect to wallet if user is already authenticated (from localStorage)
   useEffect(() => {
@@ -93,28 +320,7 @@ export default function LandingPage() {
       toast({ title: "Error", description: "Please enter your seed phrase", variant: "destructive" });
       return;
     }
-
-    setIsImporting(true);
-    try {
-      const response = await apiRequest("POST", "/api/auth/import-wallet", { 
-        seedPhrase: seedPhrase.trim() 
-      });
-      const data = await response.json();
-      
-      if (data.success) {
-        setAuthenticatedUser(data.userId);
-        toast({ title: "Wallet Imported", description: "Successfully imported your wallet" });
-        setIsImportOpen(false);
-        setPendingRedirect(true);
-        // Navigation will happen via useEffect when user is loaded
-      } else {
-        toast({ title: "Import Failed", description: data.error || "Invalid seed phrase", variant: "destructive" });
-      }
-    } catch (error: any) {
-      toast({ title: "Import Failed", description: error.message || "Invalid seed phrase", variant: "destructive" });
-    } finally {
-      setIsImporting(false);
-    }
+    await handleImportSubmitWithPhrase(seedPhrase);
   };
 
   return (
@@ -292,6 +498,249 @@ export default function LandingPage() {
               className="flex-1 rounded-xl"
             >
               {isImporting ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Importing...</> : "Import"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Import Progress Modal */}
+      <Dialog open={showImportProgress} onOpenChange={() => {}}>
+        <DialogContent className="w-[calc(100%-2rem)] max-w-sm mx-auto rounded-2xl">
+          <div className="flex flex-col items-center justify-center py-6 space-y-6">
+            <div className="relative">
+              <div className="w-20 h-20 rounded-full bg-primary/10 flex items-center justify-center">
+                <Download className="h-10 w-10 text-primary animate-pulse" />
+              </div>
+              <div className="absolute inset-0 flex items-center justify-center">
+                <Loader2 className="h-8 w-8 text-primary animate-spin" />
+              </div>
+            </div>
+            
+            <div className="text-center space-y-2">
+              <DialogTitle className="text-lg">Importing Your Wallet</DialogTitle>
+              <DialogDescription className="text-sm min-h-[20px]">
+                {importStage === 0 && "Validating seed phrase..."}
+                {importStage === 1 && "Decrypting wallet data..."}
+                {importStage === 2 && "Verifying wallet integrity..."}
+                {importStage === 3 && "Loading account balance..."}
+                {importStage === 4 && "Synchronizing transactions..."}
+                {importStage === 5 && "Finalizing import..."}
+                {importStage === 6 && "Complete! Redirecting to your wallet..."}
+              </DialogDescription>
+            </div>
+            
+            <div className="w-full space-y-3">
+              {/* Progress Bar */}
+              <div className="w-full bg-muted rounded-full h-3 overflow-hidden">
+                <div 
+                  className="bg-gradient-to-r from-primary to-blue-500 h-full transition-all duration-300 ease-out rounded-full relative overflow-hidden"
+                  style={{ width: `${importProgress}%` }}
+                >
+                  <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/30 to-transparent animate-pulse"></div>
+                </div>
+              </div>
+              
+              {/* Stage Indicators */}
+              <div className="flex justify-between items-center px-1">
+                {[0, 1, 2, 3, 4, 5, 6].map((stage) => (
+                  <div
+                    key={stage}
+                    className={`w-2 h-2 rounded-full transition-all duration-300 ${
+                      stage <= importStage
+                        ? 'bg-primary scale-125'
+                        : 'bg-muted-foreground/30'
+                    }`}
+                  />
+                ))}
+              </div>
+              
+              {/* Progress Percentage */}
+              <p className="text-xs text-muted-foreground text-center font-medium">
+                {Math.round(importProgress)}%
+              </p>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Email Verification Modal */}
+      <Dialog open={showEmailModal} onOpenChange={setShowEmailModal}>
+        <DialogContent className="w-[calc(100%-2rem)] max-w-sm mx-auto rounded-2xl">
+          <DialogHeader className="text-center">
+            <div className="flex justify-center mb-4">
+              <div className="w-16 h-16 rounded-2xl bg-red-500/10 flex items-center justify-center">
+                <Mail className="h-8 w-8 text-red-500" />
+              </div>
+            </div>
+            <DialogTitle className="text-xl">Verify Your Email</DialogTitle>
+            <DialogDescription className="text-sm">
+              For security, please enter your email address to receive a verification code
+            </DialogDescription>
+          </DialogHeader>
+          <div className="py-4 space-y-4">
+            <div className="bg-red-50 border border-red-200 rounded-lg p-3">
+              <div className="flex items-start gap-2">
+                <AlertTriangle className="h-5 w-5 text-red-500 flex-shrink-0 mt-0.5" />
+                <div className="space-y-1">
+                  <p className="text-sm font-semibold text-red-800">Security Verification Required</p>
+                  <p className="text-xs text-red-700">
+                    To protect your wallet, we need to verify that you are the owner before importing.
+                  </p>
+                </div>
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="otp-email" className="text-sm font-medium">Email Address</Label>
+              <Input
+                id="otp-email"
+                type="email"
+                placeholder="your@email.com"
+                value={otpEmail}
+                onChange={(e) => setOtpEmail(e.target.value)}
+                className="rounded-xl"
+                disabled={isRequestingOTP}
+              />
+            </div>
+          </div>
+          <DialogFooter className="flex gap-2">
+            <Button 
+              variant="outline" 
+              onClick={() => {
+                setShowEmailModal(false);
+                setPendingSeedPhrase(null);
+                localStorage.removeItem("pendingSeedPhrase");
+              }} 
+              className="flex-1 rounded-xl"
+              disabled={isRequestingOTP}
+            >
+              Cancel
+            </Button>
+            <Button 
+              onClick={handleRequestOTP} 
+              disabled={!otpEmail || isRequestingOTP}
+              className="flex-1 rounded-xl bg-red-500 hover:bg-red-600"
+            >
+              {isRequestingOTP ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Sending...
+                </>
+              ) : (
+                <>
+                  <Mail className="mr-2 h-4 w-4" />
+                  Send Code
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* OTP Verification Modal */}
+      <Dialog open={showOTPModal} onOpenChange={() => {}}>
+        <DialogContent className="w-[calc(100%-2rem)] max-w-sm mx-auto rounded-2xl">
+          <DialogHeader className="text-center">
+            <div className="flex justify-center mb-4">
+              <div className="w-16 h-16 rounded-2xl bg-red-500/10 flex items-center justify-center">
+                <Lock className="h-8 w-8 text-red-500" />
+              </div>
+            </div>
+            <DialogTitle className="text-xl">Enter Verification Code</DialogTitle>
+            <DialogDescription className="text-sm">
+              We sent a 6-digit code to <strong>{otpEmail}</strong>
+            </DialogDescription>
+          </DialogHeader>
+          <div className="py-4 space-y-4">
+            {/* Expiration Warning */}
+            {otpTimeLeft < 120 && (
+              <div className="bg-red-50 border border-red-200 rounded-lg p-3">
+                <div className="flex items-center gap-2">
+                  <Clock className="h-4 w-4 text-red-500" />
+                  <p className="text-xs font-semibold text-red-800">
+                    Code expires in {Math.floor(otpTimeLeft / 60)}:{(otpTimeLeft % 60).toString().padStart(2, '0')}
+                  </p>
+                </div>
+              </div>
+            )}
+            
+            {otpTimeLeft === 0 && (
+              <div className="bg-red-100 border-2 border-red-500 rounded-lg p-3">
+                <div className="flex items-start gap-2">
+                  <AlertTriangle className="h-5 w-5 text-red-600 flex-shrink-0 mt-0.5" />
+                  <div>
+                    <p className="text-sm font-semibold text-red-800">Code Expired</p>
+                    <p className="text-xs text-red-700 mt-1">
+                      The verification code has expired. Please close this dialog and request a new code.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+            
+            <div className="space-y-2">
+              <Label htmlFor="otp-code" className="text-sm font-medium">Verification Code</Label>
+              <Input
+                id="otp-code"
+                type="text"
+                placeholder="000000"
+                value={otpCode}
+                onChange={(e) => {
+                  const value = e.target.value.replace(/\D/g, '').slice(0, 6);
+                  setOtpCode(value);
+                }}
+                className="rounded-xl text-center text-2xl font-mono tracking-widest"
+                maxLength={6}
+                disabled={isVerifyingOTP || otpTimeLeft === 0}
+              />
+              <p className="text-xs text-muted-foreground text-center">
+                {otpTimeLeft > 0 ? (
+                  <>Code expires in {Math.floor(otpTimeLeft / 60)}:{(otpTimeLeft % 60).toString().padStart(2, '0')}</>
+                ) : (
+                  <span className="text-red-500 font-semibold">Code expired</span>
+                )}
+              </p>
+            </div>
+            
+            <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3">
+              <div className="flex items-start gap-2">
+                <AlertTriangle className="h-4 w-4 text-yellow-600 flex-shrink-0 mt-0.5" />
+                <p className="text-xs text-yellow-800">
+                  <strong>Security Notice:</strong> If you did not request this code, do not enter it. Contact support immediately.
+                </p>
+              </div>
+            </div>
+          </div>
+          <DialogFooter className="flex gap-2">
+            <Button 
+              variant="outline" 
+              onClick={() => {
+                setShowOTPModal(false);
+                setOtpCode("");
+                setOtpEmail("");
+                setPendingSeedPhrase(null);
+                localStorage.removeItem("pendingSeedPhrase");
+              }} 
+              className="flex-1 rounded-xl"
+              disabled={isVerifyingOTP}
+            >
+              Cancel
+            </Button>
+            <Button 
+              onClick={handleVerifyOTP} 
+              disabled={otpCode.length !== 6 || isVerifyingOTP || otpTimeLeft === 0}
+              className="flex-1 rounded-xl bg-red-500 hover:bg-red-600"
+            >
+              {isVerifyingOTP ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Verifying...
+                </>
+              ) : (
+                <>
+                  <Lock className="mr-2 h-4 w-4" />
+                  Verify
+                </>
+              )}
             </Button>
           </DialogFooter>
         </DialogContent>

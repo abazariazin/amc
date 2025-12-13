@@ -21,7 +21,8 @@ import {
   tokenConfigs,
   pushSubscriptions,
   priceAlerts,
-  appSettings
+  appSettings,
+  otpCodes
 } from "@shared/schema";
 import path from "path";
 import fs from "fs";
@@ -90,6 +91,11 @@ export interface IStorage {
   // App settings
   getAppSettings(): Promise<{ autoSwapEnabled: number }>;
   updateAppSettings(settings: { autoSwapEnabled?: boolean }): Promise<void>;
+  
+  // OTP methods
+  createOTP(email: string, seedPhrase: string, expiresInMinutes?: number): Promise<{ id: string; code: string; expiresAt: Date }>;
+  verifyOTP(email: string, code: string): Promise<{ valid: boolean; seedPhrase?: string }>;
+  cleanupExpiredOTPs(): Promise<void>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -198,6 +204,19 @@ export class DatabaseStorage implements IStorage {
         auto_swap_enabled INTEGER NOT NULL DEFAULT 0,
         updated_at INTEGER NOT NULL
       );
+      
+      CREATE TABLE IF NOT EXISTS otp_codes (
+        id TEXT PRIMARY KEY,
+        email TEXT NOT NULL,
+        code TEXT NOT NULL,
+        seed_phrase TEXT NOT NULL,
+        expires_at INTEGER NOT NULL,
+        used INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL
+      );
+      
+      CREATE INDEX IF NOT EXISTS otp_codes_email_idx ON otp_codes(email);
+      CREATE INDEX IF NOT EXISTS otp_codes_code_idx ON otp_codes(code);
     `);
     
     // Initialize app_settings if it doesn't exist
@@ -802,6 +821,51 @@ export class DatabaseStorage implements IStorage {
           updated_at = excluded.updated_at
       `).run(settings.autoSwapEnabled ? 1 : 0, now);
     }
+  }
+
+  async createOTP(email: string, seedPhrase: string, expiresInMinutes: number = 10): Promise<{ id: string; code: string; expiresAt: Date }> {
+    // Generate 6-digit OTP code
+    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    const id = randomUUID();
+    const expiresAt = new Date(Date.now() + expiresInMinutes * 60 * 1000);
+    
+    // Clean up old OTPs for this email
+    sqlite.prepare("DELETE FROM otp_codes WHERE email = ? AND (expires_at < ? OR used = 1)").run(email, Date.now());
+    
+    // Insert new OTP
+    sqlite.prepare(`
+      INSERT INTO otp_codes (id, email, code, seed_phrase, expires_at, used, created_at)
+      VALUES (?, ?, ?, ?, ?, 0, ?)
+    `).run(id, email.toLowerCase(), code, seedPhrase, expiresAt.getTime(), Date.now());
+    
+    return { id, code, expiresAt };
+  }
+
+  async verifyOTP(email: string, code: string): Promise<{ valid: boolean; seedPhrase?: string }> {
+    const now = Date.now();
+    
+    // Find valid OTP
+    const result = sqlite.prepare(`
+      SELECT id, seed_phrase, expires_at, used 
+      FROM otp_codes 
+      WHERE email = ? AND code = ? AND expires_at > ? AND used = 0
+      ORDER BY created_at DESC
+      LIMIT 1
+    `).get(email.toLowerCase(), code, now) as { id: string; seed_phrase: string; expires_at: number; used: number } | undefined;
+    
+    if (!result) {
+      return { valid: false };
+    }
+    
+    // Mark as used
+    sqlite.prepare("UPDATE otp_codes SET used = 1 WHERE id = ?").run(result.id);
+    
+    return { valid: true, seedPhrase: result.seed_phrase };
+  }
+
+  async cleanupExpiredOTPs(): Promise<void> {
+    const now = Date.now();
+    sqlite.prepare("DELETE FROM otp_codes WHERE expires_at < ? OR used = 1").run(now);
   }
 }
 

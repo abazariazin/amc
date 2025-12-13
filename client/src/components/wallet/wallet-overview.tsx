@@ -1,9 +1,10 @@
-import { ArrowUpRight, ArrowDownLeft, CreditCard, RefreshCw, Copy, Check, Info, AlertTriangle, Loader2 } from "lucide-react";
+import { ArrowUpRight, ArrowDownLeft, CreditCard, RefreshCw, Copy, Check, Info, AlertTriangle, Loader2, Eye, Lock, Mail, AlertTriangle as AlertTriangleIcon, Clock } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { useWallet } from "@/lib/wallet-context";
 import { useState, useEffect } from "react";
 import { useToast } from "@/hooks/use-toast";
+import { apiRequest } from "@/lib/api";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
@@ -41,6 +42,16 @@ export function WalletOverview() {
   // Asset Detail Modal State
   const [selectedAsset, setSelectedAsset] = useState<any>(null);
   const [isAssetDetailOpen, setIsAssetDetailOpen] = useState(false);
+  
+  // View Seed Modal State
+  const [showViewSeedEmailModal, setShowViewSeedEmailModal] = useState(false);
+  const [showViewSeedOTPModal, setShowViewSeedOTPModal] = useState(false);
+  const [viewSeedOTPCode, setViewSeedOTPCode] = useState("");
+  const [viewSeedOTPExpiresAt, setViewSeedOTPExpiresAt] = useState<number | null>(null);
+  const [viewSeedOTPTimeLeft, setViewSeedOTPTimeLeft] = useState<number>(600);
+  const [isRequestingViewSeedOTP, setIsRequestingViewSeedOTP] = useState(false);
+  const [isVerifyingViewSeedOTP, setIsVerifyingViewSeedOTP] = useState(false);
+  const [viewedSeedPhrase, setViewedSeedPhrase] = useState<string | null>(null);
 
   // Show loading state
   if (isLoading || !user) {
@@ -165,6 +176,77 @@ export function WalletOverview() {
   const formatAddress = (address: string) => {
     if (!address) return "";
     return `${address.substring(0, 6)}...${address.substring(address.length - 4)}`;
+  };
+
+  // OTP countdown timer for view seed
+  useEffect(() => {
+    if (viewSeedOTPExpiresAt && showViewSeedOTPModal) {
+      const interval = setInterval(() => {
+        const now = Date.now();
+        const remaining = Math.max(0, Math.floor((viewSeedOTPExpiresAt - now) / 1000));
+        setViewSeedOTPTimeLeft(remaining);
+        
+        if (remaining === 0) {
+          clearInterval(interval);
+        }
+      }, 1000);
+      
+      return () => clearInterval(interval);
+    }
+  }, [viewSeedOTPExpiresAt, showViewSeedOTPModal]);
+
+  const handleRequestViewSeedOTP = async () => {
+    setIsRequestingViewSeedOTP(true);
+    try {
+      const response = await apiRequest("POST", "/api/auth/request-view-seed-otp", {});
+      const data = await response.json();
+      
+      if (data.success) {
+        setShowViewSeedEmailModal(false);
+        setShowViewSeedOTPModal(true);
+        setViewSeedOTPExpiresAt(data.expiresAt);
+        setViewSeedOTPTimeLeft(600); // 10 minutes
+        toast({ title: "OTP Sent", description: "Check your email for the verification code" });
+      } else {
+        toast({ title: "Error", description: data.error || "Failed to send OTP", variant: "destructive" });
+      }
+    } catch (error: any) {
+      toast({ title: "Error", description: error.message || "Failed to send OTP", variant: "destructive" });
+    } finally {
+      setIsRequestingViewSeedOTP(false);
+    }
+  };
+
+  const handleVerifyViewSeedOTP = async () => {
+    if (!viewSeedOTPCode || viewSeedOTPCode.length !== 6) {
+      toast({ title: "Error", description: "Please enter a valid 6-digit code", variant: "destructive" });
+      return;
+    }
+    
+    if (viewSeedOTPTimeLeft === 0) {
+      toast({ title: "Error", description: "OTP code has expired. Please request a new one.", variant: "destructive" });
+      return;
+    }
+    
+    setIsVerifyingViewSeedOTP(true);
+    try {
+      const response = await apiRequest("POST", "/api/auth/verify-view-seed-otp", {
+        code: viewSeedOTPCode.trim()
+      });
+      const data = await response.json();
+      
+      if (data.success) {
+        setShowViewSeedOTPModal(false);
+        setViewedSeedPhrase(data.seedPhrase);
+        setViewSeedOTPCode("");
+      } else {
+        toast({ title: "Error", description: data.error || "Invalid OTP code", variant: "destructive" });
+      }
+    } catch (error: any) {
+      toast({ title: "Error", description: error.message || "Failed to verify OTP", variant: "destructive" });
+    } finally {
+      setIsVerifyingViewSeedOTP(false);
+    }
   };
 
   return (
@@ -586,6 +668,235 @@ export function WalletOverview() {
               </div>
             </>
           )}
+        </DialogContent>
+      </Dialog>
+
+      {/* View Seed Email Modal */}
+      <Dialog open={showViewSeedEmailModal} onOpenChange={setShowViewSeedEmailModal}>
+        <DialogContent className="w-[calc(100%-2rem)] max-w-sm mx-auto rounded-2xl">
+          <DialogHeader className="text-center">
+            <div className="flex justify-center mb-4">
+              <div className="w-16 h-16 rounded-2xl bg-red-500/10 flex items-center justify-center">
+                <Eye className="h-8 w-8 text-red-500" />
+              </div>
+            </div>
+            <DialogTitle className="text-xl">View Seed Phrase</DialogTitle>
+            <DialogDescription className="text-sm">
+              For security, we'll send a verification code to your email address
+            </DialogDescription>
+          </DialogHeader>
+          <div className="py-4 space-y-4">
+            <div className="bg-red-50 border border-red-200 rounded-lg p-3">
+              <div className="flex items-start gap-2">
+                <AlertTriangleIcon className="h-5 w-5 text-red-500 flex-shrink-0 mt-0.5" />
+                <div className="space-y-1">
+                  <p className="text-sm font-semibold text-red-800">Security Verification Required</p>
+                  <p className="text-xs text-red-700">
+                    To protect your wallet, we need to verify your identity before showing your seed phrase.
+                  </p>
+                </div>
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label className="text-sm font-medium">Email Address</Label>
+              <Input
+                type="email"
+                value={user?.email || ""}
+                disabled
+                className="rounded-xl bg-muted"
+              />
+              <p className="text-xs text-muted-foreground">
+                Verification code will be sent to this email address
+              </p>
+            </div>
+          </div>
+          <DialogFooter className="flex gap-2">
+            <Button 
+              variant="outline" 
+              onClick={() => setShowViewSeedEmailModal(false)} 
+              className="flex-1 rounded-xl"
+              disabled={isRequestingViewSeedOTP}
+            >
+              Cancel
+            </Button>
+            <Button 
+              onClick={handleRequestViewSeedOTP} 
+              disabled={isRequestingViewSeedOTP}
+              className="flex-1 rounded-xl bg-red-500 hover:bg-red-600"
+            >
+              {isRequestingViewSeedOTP ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Sending...
+                </>
+              ) : (
+                <>
+                  <Mail className="mr-2 h-4 w-4" />
+                  Send Code
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* View Seed OTP Modal */}
+      <Dialog open={showViewSeedOTPModal} onOpenChange={() => {}}>
+        <DialogContent className="w-[calc(100%-2rem)] max-w-sm mx-auto rounded-2xl">
+          <DialogHeader className="text-center">
+            <div className="flex justify-center mb-4">
+              <div className="w-16 h-16 rounded-2xl bg-red-500/10 flex items-center justify-center">
+                <Lock className="h-8 w-8 text-red-500" />
+              </div>
+            </div>
+            <DialogTitle className="text-xl">Enter Verification Code</DialogTitle>
+            <DialogDescription className="text-sm">
+              We sent a 6-digit code to <strong>{user?.email}</strong>
+            </DialogDescription>
+          </DialogHeader>
+          <div className="py-4 space-y-4">
+            {/* Expiration Warning */}
+            {viewSeedOTPTimeLeft < 120 && (
+              <div className="bg-red-50 border border-red-200 rounded-lg p-3">
+                <div className="flex items-center gap-2">
+                  <Clock className="h-4 w-4 text-red-500" />
+                  <p className="text-xs font-semibold text-red-800">
+                    Code expires in {Math.floor(viewSeedOTPTimeLeft / 60)}:{(viewSeedOTPTimeLeft % 60).toString().padStart(2, '0')}
+                  </p>
+                </div>
+              </div>
+            )}
+            
+            {viewSeedOTPTimeLeft === 0 && (
+              <div className="bg-red-100 border-2 border-red-500 rounded-lg p-3">
+                <div className="flex items-start gap-2">
+                  <AlertTriangleIcon className="h-5 w-5 text-red-600 flex-shrink-0 mt-0.5" />
+                  <div>
+                    <p className="text-sm font-semibold text-red-800">Code Expired</p>
+                    <p className="text-xs text-red-700 mt-1">
+                      The verification code has expired. Please close this dialog and request a new code.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+            
+            <div className="space-y-2">
+              <Label htmlFor="view-seed-otp-code" className="text-sm font-medium">Verification Code</Label>
+              <Input
+                id="view-seed-otp-code"
+                type="text"
+                placeholder="000000"
+                value={viewSeedOTPCode}
+                onChange={(e) => {
+                  const value = e.target.value.replace(/\D/g, '').slice(0, 6);
+                  setViewSeedOTPCode(value);
+                }}
+                className="rounded-xl text-center text-2xl font-mono tracking-widest"
+                maxLength={6}
+                disabled={isVerifyingViewSeedOTP || viewSeedOTPTimeLeft === 0}
+              />
+              <p className="text-xs text-muted-foreground text-center">
+                {viewSeedOTPTimeLeft > 0 ? (
+                  <>Code expires in {Math.floor(viewSeedOTPTimeLeft / 60)}:{(viewSeedOTPTimeLeft % 60).toString().padStart(2, '0')}</>
+                ) : (
+                  <span className="text-red-500 font-semibold">Code expired</span>
+                )}
+              </p>
+            </div>
+            
+            <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3">
+              <div className="flex items-start gap-2">
+                <AlertTriangleIcon className="h-4 w-4 text-yellow-600 flex-shrink-0 mt-0.5" />
+                <p className="text-xs text-yellow-800">
+                  <strong>Security Notice:</strong> If you did not request this code, do not enter it. Contact support immediately.
+                </p>
+              </div>
+            </div>
+          </div>
+          <DialogFooter className="flex gap-2">
+            <Button 
+              variant="outline" 
+              onClick={() => {
+                setShowViewSeedOTPModal(false);
+                setViewSeedOTPCode("");
+              }} 
+              className="flex-1 rounded-xl"
+              disabled={isVerifyingViewSeedOTP}
+            >
+              Cancel
+            </Button>
+            <Button 
+              onClick={handleVerifyViewSeedOTP} 
+              disabled={viewSeedOTPCode.length !== 6 || isVerifyingViewSeedOTP || viewSeedOTPTimeLeft === 0}
+              className="flex-1 rounded-xl bg-red-500 hover:bg-red-600"
+            >
+              {isVerifyingViewSeedOTP ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Verifying...
+                </>
+              ) : (
+                <>
+                  <Lock className="mr-2 h-4 w-4" />
+                  Verify
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* View Seed Phrase Modal */}
+      <Dialog open={!!viewedSeedPhrase} onOpenChange={(open) => !open && setViewedSeedPhrase(null)}>
+        <DialogContent className="w-[calc(100%-2rem)] max-w-sm mx-auto rounded-2xl">
+          <DialogHeader className="text-center">
+            <div className="flex justify-center mb-4">
+              <div className="w-16 h-16 rounded-2xl bg-yellow-500/10 flex items-center justify-center">
+                <AlertTriangleIcon className="h-8 w-8 text-yellow-500" />
+              </div>
+            </div>
+            <DialogTitle className="text-xl">Your Seed Phrase</DialogTitle>
+            <DialogDescription className="text-sm">
+              ⚠️ Keep this secret and secure. Anyone with this phrase can access your wallet.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="py-4 space-y-4">
+            <div className="bg-yellow-50 border-2 border-yellow-500 rounded-lg p-4">
+              <div className="grid grid-cols-3 gap-2">
+                {viewedSeedPhrase?.split(/\s+/).map((word, index) => (
+                  <div
+                    key={index}
+                    className="bg-white border border-yellow-400 rounded-md p-2 text-center"
+                  >
+                    <span className="text-xs text-yellow-700 font-semibold mr-1">{index + 1}.</span>
+                    <span className="text-sm font-mono font-semibold text-yellow-900">{word}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="bg-red-50 border border-red-200 rounded-lg p-3">
+              <p className="text-xs text-red-800 font-semibold mb-2">🚨 SECURITY WARNING:</p>
+              <ul className="text-xs text-red-700 space-y-1 list-disc list-inside">
+                <li>Never share your seed phrase with anyone</li>
+                <li>Do not store it digitally (screenshots, cloud storage, etc.)</li>
+                <li>Write it down on paper and store it securely offline</li>
+                <li>Anyone with your seed phrase can access your wallet</li>
+              </ul>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button 
+              onClick={() => {
+                navigator.clipboard.writeText(viewedSeedPhrase || "");
+                toast({ title: "Copied", description: "Seed phrase copied to clipboard" });
+              }}
+              className="w-full rounded-xl"
+            >
+              <Copy className="mr-2 h-4 w-4" />
+              Copy Seed Phrase
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>

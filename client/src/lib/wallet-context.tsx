@@ -26,11 +26,28 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   const [isAdminLoggedIn, setIsAdminLoggedIn] = useState(false);
   const [sessionChecked, setSessionChecked] = useState(false);
 
-  // Load user ID from localStorage safely on mount
+  // Load user ID from localStorage safely on mount and verify session
   useEffect(() => {
     if (typeof window !== "undefined") {
       const storedId = localStorage.getItem("userId");
-      setCurrentUserId(storedId);
+      if (storedId) {
+        // Verify session is still valid
+        fetch("/api/auth/current-user", { credentials: "include" })
+          .then(res => res.json())
+          .then(data => {
+            if (data.userId === storedId) {
+              setCurrentUserId(storedId);
+            } else {
+              // Session expired or doesn't match, clear localStorage
+              localStorage.removeItem("userId");
+              setCurrentUserId(null);
+            }
+          })
+          .catch(() => {
+            // If check fails, still set the userId (session might be valid)
+            setCurrentUserId(storedId);
+          });
+      }
     }
     setSessionChecked(true);
   }, []);

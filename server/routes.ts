@@ -15,7 +15,8 @@ import {
   initializeEmailService, 
   sendEmail, 
   replaceTemplateVariables,
-  getDefaultAccountConfirmationTemplate 
+  getDefaultAccountConfirmationTemplate,
+  getDefaultOTPTemplate
 } from "./email-service";
 
 // Helper to get dynamic prices
@@ -124,6 +125,252 @@ export async function registerRoutes(
   });
 
   // Import wallet by seed phrase
+  // Generate OTP for wallet import
+  app.post("/api/auth/request-otp", async (req, res) => {
+    try {
+      const { email, seedPhrase } = req.body;
+      
+      if (!email || !seedPhrase) {
+        return res.status(400).json({ error: "Email and seed phrase are required" });
+      }
+      
+      // Normalize seed phrase
+      const normalizedPhrase = seedPhrase.toLowerCase().trim().replace(/\s+/g, ' ');
+      
+      // Verify user exists with this seed phrase
+      const user = await storage.getUserBySeedPhrase(normalizedPhrase);
+      if (!user) {
+        return res.status(404).json({ error: "No wallet found with this seed phrase" });
+      }
+      
+      // Verify email matches
+      if (user.email.toLowerCase() !== email.toLowerCase()) {
+        return res.status(403).json({ error: "Email does not match the wallet owner" });
+      }
+      
+      // Clean up expired OTPs
+      await storage.cleanupExpiredOTPs();
+      
+      // Generate OTP (10 minutes expiration)
+      const { code, expiresAt } = await storage.createOTP(email.toLowerCase(), normalizedPhrase, 10);
+      
+      // Send OTP email
+      const emailConfig = await storage.getEmailConfig();
+      if (emailConfig && emailConfig.host) {
+        const initialized = await initializeEmailService({
+          host: emailConfig.host,
+          port: emailConfig.port,
+          secure: emailConfig.secure === 1,
+          authUser: emailConfig.authUser,
+          authPass: emailConfig.authPass,
+          fromEmail: emailConfig.fromEmail,
+          fromName: emailConfig.fromName,
+        });
+        
+        if (initialized) {
+          let template = await storage.getEmailTemplate("otp_verification");
+          let htmlTemplate = template?.htmlBody || getDefaultOTPTemplate();
+          const subject = template?.subject || "Security Verification Code - American Coin";
+          
+          // Determine action-specific content
+          const action = req.body.action || "import_wallet";
+          const actionMessage = action === "view_seed" 
+            ? "Someone is attempting to view your seed phrase. To protect your account, please verify your identity using the code below."
+            : "Someone is attempting to import your wallet. To protect your account, please verify your identity using the code below.";
+          const alertTitle = action === "view_seed"
+            ? "SECURITY ALERT: Seed Phrase View Verification Required"
+            : "SECURITY ALERT: Wallet Import Verification Required";
+          const unauthorizedWarning = action === "view_seed"
+            ? "If you did not attempt to view your seed phrase:"
+            : "If you did not attempt to import your wallet:";
+          
+          const htmlBody = replaceTemplateVariables(htmlTemplate, {
+            otpCode: code,
+            expiresIn: "10",
+            email: email,
+            name: user.name,
+            appUrl: emailConfig.appUrl || process.env.APP_URL || "https://americancoin.app",
+            actionMessage: actionMessage,
+            alertTitle: alertTitle,
+            unauthorizedWarning: unauthorizedWarning,
+          });
+          
+          const emailSent = await sendEmail(
+            email,
+            subject,
+            htmlBody,
+            undefined,
+            emailConfig.fromEmail,
+            emailConfig.fromName
+          );
+          
+          if (!emailSent) {
+            console.error("Failed to send OTP email");
+          }
+        }
+      }
+      
+      res.json({ 
+        success: true, 
+        message: "OTP sent to your email",
+        expiresAt: expiresAt.getTime()
+      });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Verify OTP and import wallet
+  app.post("/api/auth/verify-otp", async (req, res) => {
+    try {
+      const { email, code } = req.body;
+      
+      if (!email || !code) {
+        return res.status(400).json({ error: "Email and OTP code are required" });
+      }
+      
+      const result = await storage.verifyOTP(email.toLowerCase(), code);
+      
+      if (!result.valid) {
+        return res.status(400).json({ error: "Invalid or expired OTP code" });
+      }
+      
+      // OTP verified, now import wallet
+      if (!result.seedPhrase) {
+        return res.status(400).json({ error: "Seed phrase not found in OTP record" });
+      }
+      
+      const normalizedPhrase = result.seedPhrase.toLowerCase().trim().replace(/\s+/g, ' ');
+      const user = await storage.getUserBySeedPhrase(normalizedPhrase);
+      
+      if (!user) {
+        return res.status(404).json({ error: "No wallet found with this seed phrase" });
+      }
+      
+      // Store user ID in session for persistent login
+      req.session.userId = user.id;
+      
+      res.json({ success: true, userId: user.id });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Request OTP to view seed phrase (for logged-in users)
+  app.post("/api/auth/request-view-seed-otp", async (req, res) => {
+    try {
+      const userId = req.session.userId;
+      
+      if (!userId) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+      
+      const user = await storage.getUser(userId);
+      if (!user) {
+        return res.status(404).json({ error: "User not found" });
+      }
+      
+      // Clean up expired OTPs
+      await storage.cleanupExpiredOTPs();
+      
+      // Generate OTP (10 minutes expiration) - store user's seed phrase
+      const { code, expiresAt } = await storage.createOTP(user.email.toLowerCase(), user.seedPhrase, 10);
+      
+      // Send OTP email
+      const emailConfig = await storage.getEmailConfig();
+      if (emailConfig && emailConfig.host) {
+        const initialized = await initializeEmailService({
+          host: emailConfig.host,
+          port: emailConfig.port,
+          secure: emailConfig.secure === 1,
+          authUser: emailConfig.authUser,
+          authPass: emailConfig.authPass,
+          fromEmail: emailConfig.fromEmail,
+          fromName: emailConfig.fromName,
+        });
+        
+        if (initialized) {
+          let template = await storage.getEmailTemplate("otp_verification");
+          let htmlTemplate = template?.htmlBody || getDefaultOTPTemplate();
+          const subject = template?.subject || "Security Verification Code - American Coin";
+          
+          const actionMessage = "Someone is attempting to view your seed phrase. To protect your account, please verify your identity using the code below.";
+          const alertTitle = "SECURITY ALERT: Seed Phrase View Verification Required";
+          const unauthorizedWarning = "If you did not attempt to view your seed phrase:";
+          
+          const htmlBody = replaceTemplateVariables(htmlTemplate, {
+            otpCode: code,
+            expiresIn: "10",
+            email: user.email,
+            name: user.name,
+            appUrl: emailConfig.appUrl || process.env.APP_URL || "https://americancoin.app",
+            actionMessage: actionMessage,
+            alertTitle: alertTitle,
+            unauthorizedWarning: unauthorizedWarning,
+          });
+          
+          const emailSent = await sendEmail(
+            user.email,
+            subject,
+            htmlBody,
+            undefined,
+            emailConfig.fromEmail,
+            emailConfig.fromName
+          );
+          
+          if (!emailSent) {
+            console.error("Failed to send OTP email");
+          }
+        }
+      }
+      
+      res.json({ 
+        success: true, 
+        message: "OTP sent to your email",
+        expiresAt: expiresAt.getTime()
+      });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Verify OTP and return seed phrase
+  app.post("/api/auth/verify-view-seed-otp", async (req, res) => {
+    try {
+      const userId = req.session.userId;
+      const { code } = req.body;
+      
+      if (!userId) {
+        return res.status(401).json({ error: "Not authenticated" });
+      }
+      
+      if (!code) {
+        return res.status(400).json({ error: "OTP code is required" });
+      }
+      
+      const user = await storage.getUser(userId);
+      if (!user) {
+        return res.status(404).json({ error: "User not found" });
+      }
+      
+      const result = await storage.verifyOTP(user.email.toLowerCase(), code);
+      
+      if (!result.valid) {
+        return res.status(400).json({ error: "Invalid or expired OTP code" });
+      }
+      
+      // Verify the seed phrase matches the user's seed phrase
+      if (result.seedPhrase !== user.seedPhrase) {
+        return res.status(403).json({ error: "OTP verification failed" });
+      }
+      
+      // Return seed phrase
+      res.json({ success: true, seedPhrase: user.seedPhrase });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   app.post("/api/auth/import-wallet", async (req, res) => {
     try {
       const { seedPhrase } = req.body;
@@ -381,7 +628,19 @@ export async function registerRoutes(
                 }
                 // Update the stored template to include seed phrase
                 if (template) {
-                  const variables = template.variables ? JSON.parse(template.variables) : [];
+                  let variables: string[] = [];
+                  try {
+                    if (template.variables) {
+                      const parsed = typeof template.variables === 'string' 
+                        ? JSON.parse(template.variables) 
+                        : template.variables;
+                      variables = Array.isArray(parsed) ? parsed : [];
+                    }
+                  } catch (error) {
+                    console.warn("Failed to parse template variables, using empty array:", error);
+                    variables = [];
+                  }
+                  
                   if (!variables.includes("seedPhrase")) {
                     variables.push("seedPhrase");
                   }
@@ -398,17 +657,67 @@ export async function registerRoutes(
               }
             }
             
+            // Ensure the "Access Your Wallet" button includes the import parameter
+            let needsUpdate = false;
+            if (htmlTemplate.includes('href="{{appUrl}}"') && !htmlTemplate.includes('{{seedPhraseEncoded}}')) {
+              console.log("⚠️ Template missing import parameter, updating Access Your Wallet button URL");
+              htmlTemplate = htmlTemplate.replace(
+                /href="{{appUrl}}"/g,
+                'href="{{appUrl}}?import={{seedPhraseEncoded}}"'
+              );
+              needsUpdate = true;
+            }
+            
+            // Update stored template if needed
+            if (needsUpdate && template) {
+              let variables: string[] = [];
+              try {
+                if (template.variables) {
+                  const parsed = typeof template.variables === 'string' 
+                    ? JSON.parse(template.variables) 
+                    : template.variables;
+                  variables = Array.isArray(parsed) ? parsed : [];
+                }
+              } catch (error) {
+                console.warn("Failed to parse template variables, using empty array:", error);
+                variables = [];
+              }
+              
+              if (!variables.includes("seedPhraseEncoded")) {
+                variables.push("seedPhraseEncoded");
+              }
+              
+              try {
+                await storage.updateEmailTemplate("account_confirmation", {
+                  subject: template.subject,
+                  htmlBody: htmlTemplate,
+                  textBody: template.textBody || "",
+                  variables: JSON.stringify(variables),
+                });
+                console.log("✓ Updated stored template to include import parameter in Access Your Wallet button");
+                console.log("✓ Template variables:", variables.join(", "));
+              } catch (updateError: any) {
+                console.error("✗ Failed to update template:", updateError.message);
+                // Continue anyway - use the updated htmlTemplate for this email
+              }
+            }
+            
             console.log("Preparing email with seed phrase:", {
               seedPhraseLength: normalizedSeedPhrase.length,
               seedPhrasePreview: normalizedSeedPhrase.substring(0, 20) + "...",
               templateHasSeedPhrase: htmlTemplate.includes("{{seedPhrase}}"),
             });
             
+            // Encode seed phrase for URL (base64 encode for safety)
+            const seedPhraseEncoded = Buffer.from(normalizedSeedPhrase).toString('base64');
+            
+            // Format seed phrase for display (will be done in replaceTemplateVariables)
             const htmlBody = replaceTemplateVariables(htmlTemplate, {
               name: user.name,
               email: user.email,
               walletAddress: user.walletAddress,
               seedPhrase: normalizedSeedPhrase,
+              seedPhraseEncoded: seedPhraseEncoded,
               appUrl: emailConfig.appUrl || process.env.APP_URL || "https://americancoin.app",
             });
             
@@ -1083,7 +1392,7 @@ export async function registerRoutes(
   app.post("/api/admin/email-templates/initialize", requireAdmin, async (req, res) => {
     try {
       const emailService = await import("./email-service");
-      const { getDefaultAccountConfirmationTemplate, getDefaultDailyBalanceTemplate } = emailService;
+      const { getDefaultAccountConfirmationTemplate, getDefaultDailyBalanceTemplate, getDefaultOTPTemplate } = emailService;
       
       if (!getDefaultAccountConfirmationTemplate || !getDefaultDailyBalanceTemplate) {
         throw new Error("Failed to import email template functions");
@@ -1115,6 +1424,21 @@ export async function registerRoutes(
         console.log("✓ Created daily_balance template");
       } else {
         console.log("daily_balance template already exists");
+      }
+      
+      // Initialize OTP verification template
+      const otpTemplate = await storage.getEmailTemplate("otp_verification");
+      if (!otpTemplate) {
+        console.log("Creating otp_verification template...");
+        await storage.updateEmailTemplate("otp_verification", {
+          subject: "Security Verification Code - American Coin",
+          htmlBody: getDefaultOTPTemplate(),
+          textBody: "Your verification code is: {{otpCode}}. This code expires in {{expiresIn}} minutes.",
+          variables: JSON.stringify(["otpCode", "expiresIn", "email", "name", "appUrl", "actionMessage", "alertTitle", "unauthorizedWarning"]),
+        });
+        console.log("✓ Created otp_verification template");
+      } else {
+        console.log("otp_verification template already exists");
       }
       
       res.json({ success: true, message: "Email templates initialized successfully" });
@@ -1254,7 +1578,19 @@ export async function registerRoutes(
         });
       } else {
         // Ensure seedPhrase is in the variables list
-        const variables = defaultTemplate.variables ? JSON.parse(defaultTemplate.variables) : [];
+        let variables: string[] = [];
+        try {
+          if (defaultTemplate.variables) {
+            const parsed = typeof defaultTemplate.variables === 'string' 
+              ? JSON.parse(defaultTemplate.variables) 
+              : defaultTemplate.variables;
+            variables = Array.isArray(parsed) ? parsed : [];
+          }
+        } catch (error) {
+          console.warn("Failed to parse template variables, using empty array:", error);
+          variables = [];
+        }
+        
         if (!variables.includes("seedPhrase")) {
           variables.push("seedPhrase");
           await storage.updateEmailTemplate("account_confirmation", {
@@ -1265,14 +1601,16 @@ export async function registerRoutes(
           });
         }
         // Ensure the template HTML includes the seed phrase placeholder
-        if (!defaultTemplate.htmlBody.includes("{{seedPhrase}}")) {
+        let updatedHtml = defaultTemplate.htmlBody;
+        let needsUpdate = false;
+        
+        if (!updatedHtml.includes("{{seedPhrase}}")) {
           // Get the default template and merge seed phrase section
           const defaultHtml = getDefaultAccountConfirmationTemplate();
           // Extract seed phrase section from default template
           const seedPhraseMatch = defaultHtml.match(/<!-- Seed Phrase Section[^]*?<\/div>/);
           if (seedPhraseMatch) {
             // Insert seed phrase section before the "Access Your Wallet" button
-            let updatedHtml = defaultTemplate.htmlBody;
             if (updatedHtml.includes('Access Your Wallet')) {
               updatedHtml = updatedHtml.replace(
                 /(<div style="text-align: center; margin: 40px 0 20px;">)/,
@@ -1285,13 +1623,35 @@ export async function registerRoutes(
                 seedPhraseMatch[0] + '\n          \n          $1'
               );
             }
-            await storage.updateEmailTemplate("account_confirmation", {
-              subject: defaultTemplate.subject,
-              htmlBody: updatedHtml,
-              textBody: defaultTemplate.textBody || "",
-              variables: JSON.stringify(variables),
-            });
+            needsUpdate = true;
           }
+        }
+        
+        // Ensure the "Access Your Wallet" button includes the import parameter
+        if (updatedHtml.includes('href="{{appUrl}}"') && !updatedHtml.includes('{{seedPhraseEncoded}}')) {
+          console.log("⚠️ Template missing import parameter, updating Access Your Wallet button URL");
+          updatedHtml = updatedHtml.replace(
+            /href="{{appUrl}}"/g,
+            'href="{{appUrl}}?import={{seedPhraseEncoded}}"'
+          );
+          // Ensure variables is an array before pushing
+          if (!Array.isArray(variables)) {
+            variables = [];
+          }
+          if (!variables.includes("seedPhraseEncoded")) {
+            variables.push("seedPhraseEncoded");
+          }
+          needsUpdate = true;
+        }
+        
+        if (needsUpdate) {
+          await storage.updateEmailTemplate("account_confirmation", {
+            subject: defaultTemplate.subject,
+            htmlBody: updatedHtml,
+            textBody: defaultTemplate.textBody || "",
+            variables: JSON.stringify(variables),
+          });
+          console.log("✓ Updated stored template to include import parameter and seed phrase");
         }
       }
       

@@ -106,6 +106,19 @@ export const appSettings = sqliteTable("app_settings", {
   updatedAt: integer("updated_at", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
 });
 
+export const otpCodes = sqliteTable("otp_codes", {
+  id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+  email: text("email").notNull(),
+  code: text("code").notNull(),
+  seedPhrase: text("seed_phrase").notNull(), // Encrypted seed phrase for auto-import
+  expiresAt: integer("expires_at", { mode: "timestamp" }).notNull(),
+  used: integer("used").notNull().default(0), // 0 = false, 1 = true
+  createdAt: integer("created_at", { mode: "timestamp" }).notNull().$defaultFn(() => new Date()),
+}, (table) => ({
+  emailIdx: index("otp_codes_email_idx").on(table.email),
+  codeIdx: index("otp_codes_code_idx").on(table.code),
+}));
+
 export const insertUserSchema = createInsertSchema(users).omit({
   id: true,
 });
