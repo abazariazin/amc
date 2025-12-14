@@ -481,7 +481,9 @@ export default function LandingPage() {
         toast({ title: "Success", description: "Wallet restored successfully" });
         setIsRestoreTokenOpen(false);
         setRestoreToken("");
-        setLocation("/wallet");
+        // Set pending redirect instead of immediate redirect
+        // This will wait for user data to load before redirecting
+        setPendingRedirect(true);
       } else {
         toast({ title: "Error", description: data.error || "Invalid token", variant: "destructive" });
       }
