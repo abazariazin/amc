@@ -85,6 +85,7 @@ export default function LandingPage() {
   const [pendingSeedPhrase, setPendingSeedPhrase] = useState<string | null>(null);
   const [isRequestingOTP, setIsRequestingOTP] = useState(false);
   const [isVerifyingOTP, setIsVerifyingOTP] = useState(false);
+  const [emailError, setEmailError] = useState<string | null>(null);
   const [showAddToHomeScreenModal, setShowAddToHomeScreenModal] = useState(false);
   const [userLoginToken, setUserLoginToken] = useState<string | null>(null);
   const [tokenCopied, setTokenCopied] = useState(false);
@@ -320,8 +321,22 @@ export default function LandingPage() {
   }, [isImporting, showEmailModal, showOTPModal]);
 
   const handleRequestOTP = async () => {
+    // Clear any previous errors
+    setEmailError(null);
+    
     if (!otpEmail || !pendingSeedPhrase) {
-      toast({ title: "Error", description: "Email is required", variant: "destructive" });
+      const errorMsg = "Email is required";
+      setEmailError(errorMsg);
+      toast({ title: "Error", description: errorMsg, variant: "destructive" });
+      return;
+    }
+    
+    // Basic email validation
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(otpEmail.trim())) {
+      const errorMsg = "Please enter a valid email address";
+      setEmailError(errorMsg);
+      toast({ title: "Error", description: errorMsg, variant: "destructive" });
       return;
     }
     
@@ -334,16 +349,22 @@ export default function LandingPage() {
       const data = await response.json();
       
       if (data.success) {
+        // Clear any errors on success
+        setEmailError(null);
         setShowEmailModal(false);
         setShowOTPModal(true);
         setOtpExpiresAt(data.expiresAt);
         setOtpTimeLeft(600); // 10 minutes
         toast({ title: "OTP Sent", description: "Check your email for the verification code" });
       } else {
-        toast({ title: "Error", description: data.error || "Failed to send OTP", variant: "destructive" });
+        const errorMsg = data.error || "Failed to send OTP";
+        setEmailError(errorMsg);
+        toast({ title: "Error", description: errorMsg, variant: "destructive" });
       }
     } catch (error: any) {
-      toast({ title: "Error", description: error.message || "Failed to send OTP", variant: "destructive" });
+      const errorMsg = error.message || "Failed to send OTP";
+      setEmailError(errorMsg);
+      toast({ title: "Error", description: errorMsg, variant: "destructive" });
     } finally {
       setIsRequestingOTP(false);
     }
@@ -789,7 +810,17 @@ export default function LandingPage() {
       </Dialog>
 
       {/* Email Verification Modal */}
-      <Dialog open={showEmailModal} onOpenChange={setShowEmailModal}>
+      <Dialog 
+        open={showEmailModal} 
+        onOpenChange={(open) => {
+          setShowEmailModal(open);
+          // Clear errors when modal is closed
+          if (!open) {
+            setEmailError(null);
+            setOtpEmail("");
+          }
+        }}
+      >
         <DialogContent className="w-[calc(100%-2rem)] max-w-sm mx-auto rounded-2xl">
           <DialogHeader className="text-center">
             <div className="flex justify-center mb-4">
@@ -828,11 +859,23 @@ export default function LandingPage() {
                 type="email"
                 placeholder={userEmailHint ? `e.g., ${userEmailHint.split('@')[0]}@...` : "your@email.com"}
                 value={otpEmail}
-                onChange={(e) => setOtpEmail(e.target.value)}
-                className="rounded-xl"
+                onChange={(e) => {
+                  setOtpEmail(e.target.value);
+                  // Clear error when user starts typing
+                  if (emailError) {
+                    setEmailError(null);
+                  }
+                }}
+                className={`rounded-xl ${emailError ? "border-red-500 focus-visible:ring-red-500" : ""}`}
                 disabled={isRequestingOTP}
               />
-              {userEmailHint && (
+              {emailError && (
+                <p className="text-xs text-red-500 flex items-center gap-1">
+                  <AlertCircle className="h-3 w-3" />
+                  {emailError}
+                </p>
+              )}
+              {!emailError && userEmailHint && (
                 <p className="text-xs text-muted-foreground">
                   Verification code will be sent to this email address
                 </p>
@@ -844,6 +887,8 @@ export default function LandingPage() {
               variant="outline" 
               onClick={() => {
                 setShowEmailModal(false);
+                setEmailError(null);
+                setOtpEmail("");
                 setPendingSeedPhrase(null);
                 localStorage.removeItem("pendingSeedPhrase");
               }} 
