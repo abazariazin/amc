@@ -29,7 +29,14 @@ export default function HomePage() {
   }
 
   if (!user) {
-    return null;
+    // Show loading state instead of blank screen while checking session
+    return (
+      <Layout>
+        <div className="flex items-center justify-center min-h-[50vh]">
+          <div className="animate-pulse text-muted-foreground">Verifying session...</div>
+        </div>
+      </Layout>
+    );
   }
 
   return (

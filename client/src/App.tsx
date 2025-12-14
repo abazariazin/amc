@@ -11,7 +11,7 @@ import Wallet from "@/pages/wallet";
 import Scanner from "@/pages/scanner";
 import Admin from "@/pages/admin";
 import AdminLogin from "@/pages/admin-login";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 
 // Helper function to detect if app is installed to home screen (PWA)
 function isPWAInstalled(): boolean {
@@ -62,19 +62,48 @@ if (typeof window !== "undefined") {
 
 function Router() {
   const [location, setLocation] = useLocation();
+  const [sessionChecked, setSessionChecked] = useState(false);
   
   useEffect(() => {
     if (typeof window === "undefined") return;
     
-    // Check if app is installed to home screen (PWA)
-    const isInstalled = isPWAInstalled();
+    // First verify session is valid before redirecting
+    const storedUserId = localStorage.getItem("userId");
+    if (storedUserId) {
+      fetch("/api/auth/current-user", { credentials: "include" })
+        .then(res => res.json())
+        .then(data => {
+          setSessionChecked(true);
+          // If session doesn't match or is invalid, clear localStorage
+          if (data.userId !== storedUserId) {
+            localStorage.removeItem("userId");
+            return;
+          }
+          
+          // Session is valid, proceed with PWA redirect logic
+          const isInstalled = isPWAInstalled();
+          if (isInstalled && location === "/") {
+            setLocation("/wallet");
+          }
+        })
+        .catch(() => {
+          // Session check failed, but still allow navigation
+          setSessionChecked(true);
+          const isInstalled = isPWAInstalled();
+          if (isInstalled && location === "/") {
+            setLocation("/wallet");
+          }
+        });
+    } else {
+      setSessionChecked(true);
+    }
     
     // Check for token in URL (from email link when adding to home screen)
     const urlParams = new URLSearchParams(window.location.search);
     const tokenParam = urlParams.get("token");
     
     // If we have a token, try to auto-login
-    if (tokenParam && !localStorage.getItem("userId")) {
+    if (tokenParam && !storedUserId) {
       fetch("/api/auth/login-with-token", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -88,6 +117,7 @@ function Router() {
             // Clean up URL
             window.history.replaceState({}, document.title, window.location.pathname);
             // Redirect to wallet if in PWA mode
+            const isInstalled = isPWAInstalled();
             if (isInstalled && location === "/") {
               setLocation("/wallet");
             }
@@ -96,14 +126,6 @@ function Router() {
         .catch((error) => {
           console.error("Token auto-login failed:", error);
         });
-    }
-    
-    // Check if wallet is already imported (userId exists in localStorage)
-    const hasImportedWallet = localStorage.getItem("userId") !== null;
-    
-    // If app is installed AND wallet is imported, redirect to wallet instead of landing page
-    if (isInstalled && hasImportedWallet && location === "/") {
-      setLocation("/wallet");
     }
   }, [location, setLocation]);
   
