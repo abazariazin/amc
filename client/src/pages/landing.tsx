@@ -424,15 +424,16 @@ export default function LandingPage() {
 
   // Redirect to wallet once user is loaded after import (but wait for modal to be closed)
   useEffect(() => {
-    if (pendingRedirect && !isLoading && user && !showAddToHomeScreenModal) {
+    if (pendingRedirect && !isLoading && user && !showAddToHomeScreenModal && !showMobileModal) {
       setPendingRedirect(false);
+      // For mobile, show the mobile-specific modal after post-import modal
       if (isMobile) {
         setShowMobileModal(true);
       } else {
         setLocation("/wallet");
       }
     }
-  }, [user, isLoading, pendingRedirect, isMobile, showAddToHomeScreenModal, setLocation]);
+  }, [user, isLoading, pendingRedirect, isMobile, showAddToHomeScreenModal, showMobileModal, setLocation]);
 
   const handleStartNow = () => {
     setIsOptionsOpen(true);
@@ -1082,7 +1083,7 @@ export default function LandingPage() {
               variant="outline" 
               onClick={() => {
                 setShowMobileModal(false);
-                setLocation("/wallet");
+                setPendingRedirect(true);
               }} 
               className="flex-1 rounded-xl"
             >
@@ -1091,7 +1092,7 @@ export default function LandingPage() {
             <Button 
               onClick={() => {
                 setShowMobileModal(false);
-                setLocation("/wallet");
+                setPendingRedirect(true);
               }}
               className="flex-1 rounded-xl"
             >
@@ -1219,7 +1220,15 @@ export default function LandingPage() {
             <Button 
               onClick={() => {
                 setShowAddToHomeScreenModal(false);
-                setPendingRedirect(true);
+                // For mobile, show mobile-specific modal, otherwise redirect
+                if (isMobile) {
+                  // Small delay to ensure modal closes properly
+                  setTimeout(() => {
+                    setShowMobileModal(true);
+                  }, 100);
+                } else {
+                  setPendingRedirect(true);
+                }
               }} 
               className="flex-1 rounded-xl"
             >
