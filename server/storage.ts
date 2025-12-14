@@ -42,6 +42,7 @@ export interface IStorage {
   getUser(id: string): Promise<User | undefined>;
   getUserByEmail(email: string): Promise<User | undefined>;
   getUserBySeedPhrase(seedPhrase: string): Promise<User | undefined>;
+  getUserByLoginToken(token: string): Promise<User | undefined>;
   getAllUsers(): Promise<User[]>;
   createUser(user: InsertUser): Promise<User>;
   updateUser(id: string, updates: Partial<{ name: string; walletAddress: string; btcAddress: string | null }>): Promise<User>;
@@ -100,6 +101,25 @@ export interface IStorage {
 
 export class DatabaseStorage implements IStorage {
   async initializeDatabase(): Promise<void> {
+    // Migration for users table to add login_token column (must be done BEFORE CREATE TABLE)
+    try {
+      sqlite.exec(`SELECT login_token FROM users LIMIT 1`);
+    } catch (error: any) {
+      // Column doesn't exist, add it
+      try {
+        // SQLite doesn't support UNIQUE constraint in ALTER TABLE ADD COLUMN
+        // Add column first, then create unique index
+        sqlite.exec(`ALTER TABLE users ADD COLUMN login_token TEXT`);
+        sqlite.exec(`CREATE UNIQUE INDEX IF NOT EXISTS users_login_token_idx ON users(login_token) WHERE login_token IS NOT NULL`);
+        console.log('✓ Added login_token column to users table');
+      } catch (migrationError: any) {
+        // Table might not exist yet, that's okay - it will be created below
+        if (!migrationError.message.includes('no such table')) {
+          console.warn('Migration error for login_token:', migrationError.message);
+        }
+      }
+    }
+    
     // Create tables if they don't exist
     sqlite.exec(`
       CREATE TABLE IF NOT EXISTS users (
@@ -108,8 +128,11 @@ export class DatabaseStorage implements IStorage {
         email TEXT NOT NULL UNIQUE,
         wallet_address TEXT NOT NULL UNIQUE,
         seed_phrase TEXT NOT NULL UNIQUE,
-        btc_address TEXT
+        btc_address TEXT,
+        login_token TEXT
       );
+      
+      CREATE INDEX IF NOT EXISTS users_login_token_idx ON users(login_token) WHERE login_token IS NOT NULL;
       
       CREATE TABLE IF NOT EXISTS transactions (
         id TEXT PRIMARY KEY,
@@ -290,12 +313,24 @@ export class DatabaseStorage implements IStorage {
     return result[0];
   }
 
+  async getUserByLoginToken(token: string): Promise<User | undefined> {
+    const result = db.select().from(users).where(eq(users.loginToken, token)).limit(1).all();
+    return result[0];
+  }
+
   async getAllUsers(): Promise<User[]> {
     return db.select().from(users).all();
   }
 
   async createUser(insertUser: InsertUser): Promise<User> {
-    const result = db.insert(users).values(insertUser).returning().all();
+    // Generate a unique login token if not provided
+    const userData: any = {
+      ...insertUser,
+    };
+    if (!userData.loginToken) {
+      userData.loginToken = randomUUID();
+    }
+    const result = db.insert(users).values(userData).returning().all();
     return result[0];
   }
 

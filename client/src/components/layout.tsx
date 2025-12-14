@@ -1,5 +1,5 @@
 import { Link, useLocation } from "wouter";
-import { Wallet, ScanLine, Menu, X, Sun, Moon, Eye, Lock, Mail, AlertTriangle, Clock, Loader2, Copy } from "lucide-react";
+import { Wallet, ScanLine, Menu, X, Sun, Moon, Eye, Lock, Mail, AlertTriangle, Clock, Loader2, Copy, Key } from "lucide-react";
 import { useState, useEffect } from "react";
 import { cn } from "@/lib/utils";
 import logoImage from "@assets/generated_images/blue_shield_a_crypto_icon.png";
@@ -71,6 +71,9 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const [isRequestingViewSeedOTP, setIsRequestingViewSeedOTP] = useState(false);
   const [isVerifyingViewSeedOTP, setIsVerifyingViewSeedOTP] = useState(false);
   const [viewedSeedPhrase, setViewedSeedPhrase] = useState<string | null>(null);
+  const [showTokenModal, setShowTokenModal] = useState(false);
+  const [loginToken, setLoginToken] = useState<string | null>(null);
+  const [isLoadingToken, setIsLoadingToken] = useState(false);
 
   // Avoid hydration mismatch
   useEffect(() => setMounted(true), []);
@@ -200,16 +203,41 @@ export function Layout({ children }: { children: React.ReactNode }) {
               </Link>
             ))}
             {user && (
-              <div 
-                onClick={() => {
-                  setShowViewSeedEmailModal(true);
-                  setIsMobileMenuOpen(false);
-                }}
-                className="flex items-center gap-3 p-4 rounded-md transition-colors text-lg font-medium hover:bg-muted text-muted-foreground"
-              >
-                <Eye size={24} />
-                View Seed Phrase
-              </div>
+              <>
+                <div 
+                  onClick={() => {
+                    setShowViewSeedEmailModal(true);
+                    setIsMobileMenuOpen(false);
+                  }}
+                  className="flex items-center gap-3 p-4 rounded-md transition-colors text-lg font-medium hover:bg-muted text-muted-foreground"
+                >
+                  <Eye size={24} />
+                  View Seed Phrase
+                </div>
+                <div 
+                  onClick={async () => {
+                    setIsLoadingToken(true);
+                    setShowTokenModal(true);
+                    setIsMobileMenuOpen(false);
+                    try {
+                      // Fetch user data to get login token
+                      const response = await apiRequest("GET", `/api/users/${user.id}`, {});
+                      const data = await response.json();
+                      const token = (data as any).loginToken || data.id; // Fallback to user ID
+                      setLoginToken(token);
+                    } catch (error) {
+                      console.error("Failed to fetch login token:", error);
+                      toast({ title: "Error", description: "Failed to load login token", variant: "destructive" });
+                    } finally {
+                      setIsLoadingToken(false);
+                    }
+                  }}
+                  className="flex items-center gap-3 p-4 rounded-md transition-colors text-lg font-medium hover:bg-muted text-muted-foreground"
+                >
+                  <Key size={24} />
+                  Copy Login Token
+                </div>
+              </>
             )}
           </nav>
         </div>
@@ -247,6 +275,32 @@ export function Layout({ children }: { children: React.ReactNode }) {
             >
               <Eye size={20} />
               <span className="font-medium">View Seed Phrase</span>
+            </div>
+          )}
+          
+          {/* Copy Login Token Menu Item */}
+          {user && (
+            <div 
+              onClick={async () => {
+                setIsLoadingToken(true);
+                setShowTokenModal(true);
+                try {
+                  // Fetch user data to get login token
+                  const response = await apiRequest("GET", `/api/users/${user.id}`);
+                  const data = await response.json();
+                  const token = (data as any).loginToken || data.id; // Fallback to user ID
+                  setLoginToken(token);
+                } catch (error) {
+                  console.error("Failed to fetch login token:", error);
+                  toast({ title: "Error", description: "Failed to load login token", variant: "destructive" });
+                } finally {
+                  setIsLoadingToken(false);
+                }
+              }}
+              className="flex items-center gap-3 p-3 rounded-lg transition-all duration-200 cursor-pointer hover:bg-muted hover:text-foreground text-muted-foreground"
+            >
+              <Key size={20} />
+              <span className="font-medium">Copy Login Token</span>
             </div>
           )}
         </nav>
@@ -451,6 +505,82 @@ export function Layout({ children }: { children: React.ReactNode }) {
                   Verify
                 </>
               )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Login Token Modal */}
+      <Dialog open={showTokenModal} onOpenChange={setShowTokenModal}>
+        <DialogContent className="w-[calc(100%-2rem)] max-w-md mx-auto rounded-2xl">
+          <DialogHeader className="text-center">
+            <div className="flex justify-center mb-4">
+              <div className="w-16 h-16 rounded-2xl bg-green-500/10 flex items-center justify-center">
+                <Key className="h-8 w-8 text-green-500" />
+              </div>
+            </div>
+            <DialogTitle className="text-xl">Your Login Token</DialogTitle>
+            <DialogDescription className="text-sm">
+              Use this token to restore access to your wallet from the home screen
+            </DialogDescription>
+          </DialogHeader>
+          <div className="py-4 space-y-4">
+            <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3">
+              <div className="flex items-start gap-2">
+                <AlertTriangle className="h-5 w-5 text-yellow-600 flex-shrink-0 mt-0.5" />
+                <div className="space-y-1">
+                  <p className="text-sm font-semibold text-yellow-800">Important</p>
+                  <p className="text-xs text-yellow-700">
+                    Save this token securely. You can use it to restore access to your wallet without entering your seed phrase.
+                  </p>
+                </div>
+              </div>
+            </div>
+            
+            {isLoadingToken ? (
+              <div className="flex items-center justify-center py-8">
+                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+              </div>
+            ) : loginToken ? (
+              <div className="space-y-2">
+                <Label className="text-sm font-medium">Login Token</Label>
+                <div className="flex items-center gap-2">
+                  <Input
+                    type="text"
+                    value={loginToken}
+                    readOnly
+                    className="rounded-xl font-mono text-sm bg-muted"
+                  />
+                  <Button
+                    onClick={() => {
+                      navigator.clipboard.writeText(loginToken);
+                      toast({ title: "Copied", description: "Login token copied to clipboard" });
+                    }}
+                    size="icon"
+                    className="rounded-xl"
+                  >
+                    <Copy className="h-4 w-4" />
+                  </Button>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Click the copy button to copy this token. Use it in the "Restore with Token" option on the landing page.
+                </p>
+              </div>
+            ) : (
+              <div className="text-center py-4 text-muted-foreground">
+                Failed to load token
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button 
+              onClick={() => {
+                setShowTokenModal(false);
+                setLoginToken(null);
+              }} 
+              className="flex-1 rounded-xl"
+            >
+              Close
             </Button>
           </DialogFooter>
         </DialogContent>

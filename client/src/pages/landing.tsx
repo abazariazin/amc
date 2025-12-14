@@ -5,12 +5,54 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Shield, Wallet, Download, Plus, Loader2, AlertCircle, Smartphone, Share, MoreVertical, Mail, Lock, AlertTriangle, Clock } from "lucide-react";
+import { Shield, Wallet, Download, Plus, Loader2, AlertCircle, Smartphone, Share, MoreVertical, Mail, Lock, AlertTriangle, Clock, Key, Copy, Check } from "lucide-react";
 import { useLocation } from "wouter";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/api";
 import { useWallet } from "@/lib/wallet-context";
 import logoImage from "@assets/generated_images/blue_shield_a_crypto_icon.png";
+
+// Helper function to mask email address
+// Example: abncd@gmail.com → a***d@g***.c**
+function maskEmail(email: string): string {
+  if (!email || !email.includes('@')) {
+    return email;
+  }
+  
+  const [localPart, domain] = email.split('@');
+  
+  // Mask local part: show first char and last char, mask middle with asterisks
+  let maskedLocal = '';
+  if (localPart.length <= 1) {
+    maskedLocal = localPart;
+  } else if (localPart.length === 2) {
+    maskedLocal = localPart[0] + '*';
+  } else {
+    maskedLocal = localPart[0] + '*'.repeat(localPart.length - 2) + localPart[localPart.length - 1];
+  }
+  
+  // Mask domain: split by dot
+  const domainParts = domain.split('.');
+  const maskedDomainParts = domainParts.map((part, index) => {
+    const isLastPart = index === domainParts.length - 1;
+    
+    if (part.length <= 1) {
+      return part;
+    } else if (part.length === 2) {
+      return part[0] + '*';
+    } else {
+      if (isLastPart) {
+        // TLD: show first char and last char with asterisks in between
+        return part[0] + '*'.repeat(part.length - 2) + part[part.length - 1];
+      } else {
+        // Domain part before TLD: show first char, rest with asterisks
+        return part[0] + '*'.repeat(part.length - 1);
+      }
+    }
+  });
+  
+  return `${maskedLocal}@${maskedDomainParts.join('.')}`;
+}
 
 export default function LandingPage() {
   const [, setLocation] = useLocation();
@@ -20,6 +62,9 @@ export default function LandingPage() {
   const [isOptionsOpen, setIsOptionsOpen] = useState(false);
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [isImportOpen, setIsImportOpen] = useState(false);
+  const [isRestoreTokenOpen, setIsRestoreTokenOpen] = useState(false);
+  const [restoreToken, setRestoreToken] = useState("");
+  const [isRestoring, setIsRestoring] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
   const [createFailed, setCreateFailed] = useState(false);
   const [seedPhrase, setSeedPhrase] = useState("");
@@ -40,6 +85,10 @@ export default function LandingPage() {
   const [pendingSeedPhrase, setPendingSeedPhrase] = useState<string | null>(null);
   const [isRequestingOTP, setIsRequestingOTP] = useState(false);
   const [isVerifyingOTP, setIsVerifyingOTP] = useState(false);
+  const [showAddToHomeScreenModal, setShowAddToHomeScreenModal] = useState(false);
+  const [userLoginToken, setUserLoginToken] = useState<string | null>(null);
+  const [tokenCopied, setTokenCopied] = useState(false);
+  const [userEmailHint, setUserEmailHint] = useState<string | null>(null);
 
   useEffect(() => {
     const checkMobile = () => {
@@ -122,8 +171,22 @@ export default function LandingPage() {
         localStorage.removeItem("pendingSeedPhrase");
         setShowImportProgress(false);
         setIsImportOpen(false);
-        setPendingRedirect(true);
-        // Navigation will happen via useEffect when user is loaded
+        
+        // Fetch user login token to show in modal
+        try {
+          const userResponse = await apiRequest("GET", `/api/users/${data.userId}`);
+          const userData = await userResponse.json();
+          const token = (userData as any).loginToken || userData.id;
+          setUserLoginToken(token);
+          setShowAddToHomeScreenModal(true);
+        } catch (error) {
+          console.error("Failed to fetch login token:", error);
+          // Still show modal but without token
+          setShowAddToHomeScreenModal(true);
+        }
+        
+        // Don't set pendingRedirect yet - wait for modal to be closed
+        // Navigation will happen when modal is closed
       } else {
         clearInterval(progressInterval);
         setShowImportProgress(false);
@@ -163,28 +226,52 @@ export default function LandingPage() {
   useEffect(() => {
     if (typeof window === "undefined") return;
     
-    // First, check URL parameter (from email link)
+    // First, check URL parameters (from email link)
     const urlParams = new URLSearchParams(window.location.search);
     const importParam = urlParams.get("import");
+    const tokenParam = urlParams.get("token");
     
-    if (importParam && !isImporting && !showEmailModal && !showOTPModal) {
-      try {
-        // Decode base64 seed phrase
-        const decodedSeedPhrase = atob(importParam);
-        
-        // Store seed phrase temporarily
-        setPendingSeedPhrase(decodedSeedPhrase);
-        localStorage.setItem("pendingSeedPhrase", decodedSeedPhrase);
-        
-        // Show email modal for OTP verification
-        setShowEmailModal(true);
-        
-        // Clean up URL parameter
-        window.history.replaceState({}, document.title, window.location.pathname);
-      } catch (error) {
-        console.error("Failed to decode seed phrase from URL:", error);
-        toast({ title: "Error", description: "Invalid import link", variant: "destructive" });
-      }
+    // If we have both token and import, try auto-login first
+    if (tokenParam && importParam && !isImporting && !showEmailModal && !showOTPModal) {
+      // Try to auto-login with token
+      fetch("/api/auth/login-with-token", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ token: tokenParam }),
+      })
+        .then(res => res.json())
+        .then(async (data) => {
+          if (data.success && data.userId) {
+            // Auto-login successful, set user ID and import wallet
+            localStorage.setItem("userId", data.userId);
+            
+            try {
+              // Decode base64 seed phrase
+              const decodedSeedPhrase = atob(importParam);
+              
+              // Import wallet directly without OTP (since we're using the token)
+              await handleImportSubmitWithPhrase(decodedSeedPhrase);
+              
+              // Clean up URL parameters
+              window.history.replaceState({}, document.title, window.location.pathname);
+            } catch (error) {
+              console.error("Failed to decode seed phrase:", error);
+              toast({ title: "Error", description: "Invalid import link", variant: "destructive" });
+            }
+          } else {
+            // Token login failed, fall through to OTP flow
+            handleImportFlow(importParam);
+          }
+        })
+        .catch((error) => {
+          console.error("Token login failed:", error);
+          // Fall through to OTP flow
+          handleImportFlow(importParam);
+        });
+    } else if (importParam && !isImporting && !showEmailModal && !showOTPModal) {
+      // Only import parameter, use OTP flow
+      handleImportFlow(importParam);
     } else {
       // Check localStorage for pending seed phrase (PWA installation)
       const storedSeedPhrase = localStorage.getItem("pendingSeedPhrase");
@@ -195,6 +282,38 @@ export default function LandingPage() {
         // Show email modal for OTP verification
         setPendingSeedPhrase(storedSeedPhrase);
         setShowEmailModal(true);
+      }
+    }
+    
+    async function handleImportFlow(importParam: string) {
+      try {
+        // Decode base64 seed phrase
+        const decodedSeedPhrase = atob(importParam);
+        
+        // Store seed phrase temporarily
+        setPendingSeedPhrase(decodedSeedPhrase);
+        localStorage.setItem("pendingSeedPhrase", decodedSeedPhrase);
+        
+        // Try to fetch user email from seed phrase to show hint
+        try {
+          const response = await apiRequest("POST", "/api/auth/get-user-by-seed", { seedPhrase: decodedSeedPhrase });
+          const data = await response.json();
+          if (data.email) {
+            setUserEmailHint(data.email);
+          }
+        } catch (error) {
+          // User might not exist yet, that's okay
+          console.log("Could not fetch user email for hint:", error);
+        }
+        
+        // Show email modal for OTP verification
+        setShowEmailModal(true);
+        
+        // Clean up URL parameter
+        window.history.replaceState({}, document.title, window.location.pathname);
+      } catch (error) {
+        console.error("Failed to decode seed phrase from URL:", error);
+        toast({ title: "Error", description: "Invalid import link", variant: "destructive" });
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -272,18 +391,19 @@ export default function LandingPage() {
     
     if (storedUserId) {
       // User ID exists in localStorage - wait for user to load
-      if (!isLoading && user) {
+      // But don't redirect if the add-to-home-screen modal is showing
+      if (!isLoading && user && !showAddToHomeScreenModal) {
         // User is loaded and authenticated - redirect to wallet
         setLocation("/wallet");
       }
       // If still loading, wait for the next render when user loads
     }
     // If no stored userId, user needs to import/create wallet - show landing page
-  }, [user, isLoading, setLocation]);
+  }, [user, isLoading, showAddToHomeScreenModal, setLocation]);
 
-  // Redirect to wallet once user is loaded after import
+  // Redirect to wallet once user is loaded after import (but wait for modal to be closed)
   useEffect(() => {
-    if (pendingRedirect && !isLoading && user) {
+    if (pendingRedirect && !isLoading && user && !showAddToHomeScreenModal) {
       setPendingRedirect(false);
       if (isMobile) {
         setShowMobileModal(true);
@@ -291,7 +411,7 @@ export default function LandingPage() {
         setLocation("/wallet");
       }
     }
-  }, [user, isLoading, pendingRedirect, isMobile, setLocation]);
+  }, [user, isLoading, pendingRedirect, isMobile, showAddToHomeScreenModal, setLocation]);
 
   const handleStartNow = () => {
     setIsOptionsOpen(true);
@@ -313,6 +433,41 @@ export default function LandingPage() {
   const handleImportWallet = () => {
     setIsOptionsOpen(false);
     setIsImportOpen(true);
+  };
+
+  const handleRestoreWithToken = () => {
+    setIsOptionsOpen(false);
+    setIsRestoreTokenOpen(true);
+  };
+
+  const handleRestoreTokenSubmit = async () => {
+    if (!restoreToken.trim()) {
+      toast({ title: "Error", description: "Please enter a token", variant: "destructive" });
+      return;
+    }
+
+    setIsRestoring(true);
+    try {
+      const response = await apiRequest("POST", "/api/auth/login-with-token", {
+        token: restoreToken.trim(),
+      });
+      const data = await response.json();
+
+      if (data.success && data.userId) {
+        localStorage.setItem("userId", data.userId);
+        setAuthenticatedUser(data.userId);
+        toast({ title: "Success", description: "Wallet restored successfully" });
+        setIsRestoreTokenOpen(false);
+        setRestoreToken("");
+        setLocation("/wallet");
+      } else {
+        toast({ title: "Error", description: data.error || "Invalid token", variant: "destructive" });
+      }
+    } catch (error: any) {
+      toast({ title: "Error", description: error.message || "Failed to restore wallet", variant: "destructive" });
+    } finally {
+      setIsRestoring(false);
+    }
   };
 
   const handleImportSubmit = async () => {
@@ -423,7 +578,77 @@ export default function LandingPage() {
                 <div className="text-xs text-muted-foreground">Use your 12-word seed phrase</div>
               </div>
             </Button>
+            <Button 
+              variant="outline" 
+              className="h-16 flex items-center justify-start gap-3 px-4 rounded-xl"
+              onClick={handleRestoreWithToken}
+              data-testid="button-restore-token"
+            >
+              <div className="w-10 h-10 rounded-full bg-green-500/10 flex items-center justify-center flex-shrink-0">
+                <Key className="h-5 w-5 text-green-600" />
+              </div>
+              <div className="text-left">
+                <div className="font-semibold text-sm">Restore with Token</div>
+                <div className="text-xs text-muted-foreground">Use your login token</div>
+              </div>
+            </Button>
           </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Restore with Token Modal */}
+      <Dialog open={isRestoreTokenOpen} onOpenChange={setIsRestoreTokenOpen}>
+        <DialogContent className="w-[calc(100%-2rem)] max-w-sm mx-auto rounded-2xl">
+          <DialogHeader>
+            <DialogTitle className="text-lg">Restore with Token</DialogTitle>
+            <DialogDescription>
+              Enter your login token to restore access to your wallet
+            </DialogDescription>
+          </DialogHeader>
+          <div className="py-4 space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="token">Login Token</Label>
+              <Input
+                id="token"
+                type="text"
+                placeholder="Enter your login token"
+                value={restoreToken}
+                onChange={(e) => setRestoreToken(e.target.value)}
+                className="rounded-xl font-mono text-sm"
+                disabled={isRestoring}
+              />
+              <p className="text-xs text-muted-foreground">
+                You can find your login token in your account settings after logging in
+              </p>
+            </div>
+          </div>
+          <DialogFooter className="flex gap-2">
+            <Button 
+              variant="outline" 
+              onClick={() => {
+                setIsRestoreTokenOpen(false);
+                setRestoreToken("");
+              }} 
+              className="flex-1 rounded-xl"
+              disabled={isRestoring}
+            >
+              Cancel
+            </Button>
+            <Button 
+              onClick={handleRestoreTokenSubmit} 
+              disabled={isRestoring || !restoreToken.trim()}
+              className="flex-1 rounded-xl"
+            >
+              {isRestoring ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Restoring...
+                </>
+              ) : (
+                "Restore"
+              )}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 
@@ -591,15 +816,27 @@ export default function LandingPage() {
             </div>
             <div className="space-y-2">
               <Label htmlFor="otp-email" className="text-sm font-medium">Email Address</Label>
+              {userEmailHint && (
+                <div className="bg-blue-50 border border-blue-200 rounded-lg p-2 mb-2">
+                  <p className="text-xs text-blue-800">
+                    <span className="font-semibold">Hint:</span> Your email starts with <span className="font-mono">{maskEmail(userEmailHint)}</span>
+                  </p>
+                </div>
+              )}
               <Input
                 id="otp-email"
                 type="email"
-                placeholder="your@email.com"
+                placeholder={userEmailHint ? `e.g., ${userEmailHint.split('@')[0]}@...` : "your@email.com"}
                 value={otpEmail}
                 onChange={(e) => setOtpEmail(e.target.value)}
                 className="rounded-xl"
                 disabled={isRequestingOTP}
               />
+              {userEmailHint && (
+                <p className="text-xs text-muted-foreground">
+                  Verification code will be sent to this email address
+                </p>
+              )}
             </div>
           </div>
           <DialogFooter className="flex gap-2">
@@ -814,6 +1051,134 @@ export default function LandingPage() {
               className="flex-1 rounded-xl"
             >
               Done
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Add to Home Screen Modal */}
+      <Dialog open={showAddToHomeScreenModal} onOpenChange={setShowAddToHomeScreenModal}>
+        <DialogContent className="w-[calc(100%-2rem)] max-w-md mx-auto rounded-2xl">
+          <DialogHeader className="text-center">
+            <div className="flex justify-center mb-4">
+              <div className="w-16 h-16 rounded-2xl bg-primary/10 flex items-center justify-center">
+                <Smartphone className="h-8 w-8 text-primary" />
+              </div>
+            </div>
+            <DialogTitle className="text-xl">Add to Home Screen</DialogTitle>
+            <DialogDescription className="text-sm">
+              Add this app to your home screen for quick access
+            </DialogDescription>
+          </DialogHeader>
+          <div className="py-4 space-y-4">
+            {/* Instructions based on platform */}
+            <div className="space-y-3">
+              {isIOS ? (
+                <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                  <h4 className="font-semibold text-blue-900 mb-2 flex items-center gap-2">
+                    <Share className="h-4 w-4" />
+                    iOS Instructions
+                  </h4>
+                  <ol className="text-sm text-blue-800 space-y-2 list-decimal list-inside">
+                    <li>Tap the Share button <Share className="h-3 w-3 inline" /> at the bottom of your screen</li>
+                    <li>Scroll down and tap "Add to Home Screen"</li>
+                    <li>Tap "Add" to confirm</li>
+                  </ol>
+                </div>
+              ) : isMobile ? (
+                <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+                  <h4 className="font-semibold text-green-900 mb-2 flex items-center gap-2">
+                    <Share className="h-4 w-4" />
+                    Android Instructions
+                  </h4>
+                  <ol className="text-sm text-green-800 space-y-2 list-decimal list-inside">
+                    <li>Tap the menu button <MoreVertical className="h-3 w-3 inline" /> (three dots) in your browser</li>
+                    <li>Select "Add to Home screen" or "Install app"</li>
+                    <li>Tap "Add" or "Install" to confirm</li>
+                  </ol>
+                </div>
+              ) : (
+                <div className="bg-purple-50 border border-purple-200 rounded-lg p-4">
+                  <h4 className="font-semibold text-purple-900 mb-2 flex items-center gap-2">
+                    <Smartphone className="h-4 w-4" />
+                    Desktop Instructions
+                  </h4>
+                  <p className="text-sm text-purple-800">
+                    On desktop, look for the install icon in your browser's address bar, or use the browser menu to install the app.
+                  </p>
+                </div>
+              )}
+            </div>
+
+            {/* Login Token Section */}
+            {userLoginToken && (
+              <div className="space-y-2">
+                <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3">
+                  <div className="flex items-start gap-2">
+                    <Key className="h-5 w-5 text-yellow-600 flex-shrink-0 mt-0.5" />
+                    <div className="space-y-1">
+                      <p className="text-sm font-semibold text-yellow-800">Save Your Login Token</p>
+                      <p className="text-xs text-yellow-700">
+                        Copy this token to restore access to your wallet later. You can use it instead of entering your seed phrase.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+                
+                <div className="space-y-2">
+                  <Label className="text-sm font-medium">Login Token</Label>
+                  <div className="flex items-center gap-2">
+                    <Input
+                      type="text"
+                      value={userLoginToken}
+                      readOnly
+                      className="rounded-xl font-mono text-sm bg-muted"
+                    />
+                    <Button
+                      onClick={() => {
+                        navigator.clipboard.writeText(userLoginToken);
+                        setTokenCopied(true);
+                        toast({ title: "Copied", description: "Login token copied to clipboard" });
+                        setTimeout(() => setTokenCopied(false), 2000);
+                      }}
+                      size="icon"
+                      className="rounded-xl"
+                      variant={tokenCopied ? "default" : "outline"}
+                    >
+                      {tokenCopied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+                    </Button>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Use this token in "Restore with Token" option on the landing page to access your wallet.
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/* Info Box */}
+            <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
+              <div className="flex items-start gap-2">
+                <AlertCircle className="h-5 w-5 text-blue-600 flex-shrink-0 mt-0.5" />
+                <div className="space-y-1">
+                  <p className="text-sm font-semibold text-blue-800">Benefits of Adding to Home Screen</p>
+                  <ul className="text-xs text-blue-700 space-y-1 list-disc list-inside">
+                    <li>Quick access without opening your browser</li>
+                    <li>App-like experience with full-screen mode</li>
+                    <li>Auto-login when you open from home screen</li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button 
+              onClick={() => {
+                setShowAddToHomeScreenModal(false);
+                setPendingRedirect(true);
+              }} 
+              className="flex-1 rounded-xl"
+            >
+              Got It, Continue to Wallet
             </Button>
           </DialogFooter>
         </DialogContent>

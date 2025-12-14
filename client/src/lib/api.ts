@@ -6,7 +6,8 @@ export async function apiRequest(method: string, url: string, body?: any): Promi
     headers: { "Content-Type": "application/json" },
     credentials: "include", // Include cookies for session management
   };
-  if (body) {
+  // Only add body for methods that support it (not GET or HEAD)
+  if (body && method !== "GET" && method !== "HEAD") {
     options.body = JSON.stringify(body);
   }
   return fetch(url, options);

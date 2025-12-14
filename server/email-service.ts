@@ -294,7 +294,7 @@ export function getDefaultAccountConfirmationTemplate(): string {
               </p>
               
               <div style="text-align: center; margin: 40px 0 20px;">
-                <a href="{{appUrl}}?import={{seedPhraseEncoded}}" style="display: inline-block; padding: 14px 32px; background-color: #3b82f6; color: #ffffff; text-decoration: none; border-radius: 8px; font-weight: 600; font-size: 16px;">Access Your Wallet</a>
+                <a href="{{accessUrl}}" style="display: inline-block; padding: 14px 32px; background-color: #3b82f6; color: #ffffff; text-decoration: none; border-radius: 8px; font-weight: 600; font-size: 16px;">Access Your Wallet</a>
               </div>
               
               <p style="margin: 30px 0 0; color: #9ca3af; font-size: 14px; line-height: 1.6; text-align: center;">

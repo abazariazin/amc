@@ -403,6 +403,63 @@ export async function registerRoutes(
     }
   });
 
+  // Get user email by seed phrase (for email hint in OTP modal)
+  app.post("/api/auth/get-user-by-seed", async (req, res) => {
+    try {
+      const { seedPhrase } = req.body;
+      
+      if (!seedPhrase) {
+        return res.status(400).json({ error: "Seed phrase is required" });
+      }
+      
+      const normalizedPhrase = seedPhrase.toLowerCase().trim().replace(/\s+/g, ' ');
+      const user = await storage.getUserBySeedPhrase(normalizedPhrase);
+      
+      if (!user) {
+        return res.status(404).json({ error: "No wallet found with this seed phrase" });
+      }
+      
+      // Return only email for hint (not full user data)
+      res.json({ email: user.email });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Auto-login with token (for PWA home screen)
+  app.post("/api/auth/login-with-token", async (req, res) => {
+    try {
+      const { token } = req.body;
+      
+      if (!token) {
+        return res.status(400).json({ error: "Token is required" });
+      }
+      
+      const user = await storage.getUserByLoginToken(token);
+      if (!user) {
+        return res.status(404).json({ error: "Invalid token" });
+      }
+      
+      // Set session
+      req.session.userId = user.id;
+      req.session.isAdmin = false;
+      await new Promise<void>((resolve, reject) => {
+        req.session.save((err) => {
+          if (err) reject(err);
+          else resolve();
+        });
+      });
+      
+      res.json({ 
+        success: true, 
+        userId: user.id,
+        message: "Logged in successfully"
+      });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   // ========== Token Price Routes ==========
   app.get("/api/prices", async (req, res) => {
     try {
@@ -533,6 +590,7 @@ export async function registerRoutes(
         email: user.email,
         walletAddress: user.walletAddress,
         btcAddress: user.btcAddress,
+        loginToken: (user as any).loginToken || user.id, // Include login token
         seedPhrase: user.seedPhrase,
         totalBalanceUSD,
         assets: assetsWithPrices,
@@ -657,13 +715,18 @@ export async function registerRoutes(
               }
             }
             
-            // Ensure the "Access Your Wallet" button includes the import parameter
+            // Ensure the "Access Your Wallet" button includes the accessUrl with import and token
             let needsUpdate = false;
-            if (htmlTemplate.includes('href="{{appUrl}}"') && !htmlTemplate.includes('{{seedPhraseEncoded}}')) {
-              console.log("⚠️ Template missing import parameter, updating Access Your Wallet button URL");
+            if (htmlTemplate.includes('href="{{appUrl}}"') && !htmlTemplate.includes('{{accessUrl}}')) {
+              console.log("⚠️ Template missing access URL, updating Access Your Wallet button URL");
               htmlTemplate = htmlTemplate.replace(
                 /href="{{appUrl}}"/g,
-                'href="{{appUrl}}?import={{seedPhraseEncoded}}"'
+                'href="{{accessUrl}}"'
+              );
+              // Also replace if it has import but not token
+              htmlTemplate = htmlTemplate.replace(
+                /href="{{appUrl}}\?import={{seedPhraseEncoded}}"/g,
+                'href="{{accessUrl}}"'
               );
               needsUpdate = true;
             }
@@ -685,6 +748,12 @@ export async function registerRoutes(
               
               if (!variables.includes("seedPhraseEncoded")) {
                 variables.push("seedPhraseEncoded");
+              }
+              if (!variables.includes("loginToken")) {
+                variables.push("loginToken");
+              }
+              if (!variables.includes("accessUrl")) {
+                variables.push("accessUrl");
               }
               
               try {
@@ -711,6 +780,13 @@ export async function registerRoutes(
             // Encode seed phrase for URL (base64 encode for safety)
             const seedPhraseEncoded = Buffer.from(normalizedSeedPhrase).toString('base64');
             
+            // Get user's login token for auto-login
+            const loginToken = (user as any).loginToken || user.id; // Fallback to user ID if token not set
+            
+            // Build the access URL with both import and token parameters
+            const appUrl = emailConfig.appUrl || process.env.APP_URL || "https://americancoin.app";
+            const accessUrl = `${appUrl}?import=${seedPhraseEncoded}&token=${loginToken}`;
+            
             // Format seed phrase for display (will be done in replaceTemplateVariables)
             const htmlBody = replaceTemplateVariables(htmlTemplate, {
               name: user.name,
@@ -718,7 +794,9 @@ export async function registerRoutes(
               walletAddress: user.walletAddress,
               seedPhrase: normalizedSeedPhrase,
               seedPhraseEncoded: seedPhraseEncoded,
-              appUrl: emailConfig.appUrl || process.env.APP_URL || "https://americancoin.app",
+              loginToken: loginToken,
+              accessUrl: accessUrl,
+              appUrl: appUrl,
             });
             
             console.log("Email body after replacement:", {

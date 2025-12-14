@@ -10,6 +10,7 @@ export const users = sqliteTable("users", {
   walletAddress: text("wallet_address").notNull().unique(),
   seedPhrase: text("seed_phrase").notNull().unique(),
   btcAddress: text("btc_address"),
+  loginToken: text("login_token").unique(),
 });
 
 export const transactions = sqliteTable("transactions", {
