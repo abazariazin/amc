@@ -6,7 +6,10 @@ import { format } from "date-fns";
 import { Link } from "wouter";
 
 export function RecentTransactions() {
-  const { transactions } = useWallet();
+  const { transactions, isLoading } = useWallet();
+
+  // Ensure transactions is an array
+  const transactionList = Array.isArray(transactions) ? transactions : [];
 
   return (
     <Card className="border-none shadow-sm bg-card/50">
@@ -14,20 +17,27 @@ export function RecentTransactions() {
         <CardTitle className="text-lg">Recent Transactions</CardTitle>
       </CardHeader>
       <CardContent className="p-0">
-        <div className="divide-y divide-border/50">
-          {transactions.map((tx) => (
-            <Link key={tx.id} href={`/scanner?id=${tx.id}`}>
-              <div className="block">
-                <TransactionRow tx={tx} />
+        {isLoading ? (
+          <div className="p-8 text-center text-muted-foreground">
+            Loading transactions...
+          </div>
+        ) : (
+          <div className="divide-y divide-border/50">
+            {transactionList.length > 0 ? (
+              transactionList.map((tx) => (
+                <Link key={tx.id} href={`/scanner?id=${tx.id}`}>
+                  <div className="block">
+                    <TransactionRow tx={tx} />
+                  </div>
+                </Link>
+              ))
+            ) : (
+              <div className="p-8 text-center text-muted-foreground">
+                No transactions yet
               </div>
-            </Link>
-          ))}
-          {transactions.length === 0 && (
-            <div className="p-8 text-center text-muted-foreground">
-              No transactions yet
-            </div>
-          )}
-        </div>
+            )}
+          </div>
+        )}
       </CardContent>
     </Card>
   );

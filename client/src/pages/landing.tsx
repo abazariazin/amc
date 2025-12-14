@@ -252,10 +252,13 @@ export default function LandingPage() {
               const decodedSeedPhrase = atob(importParam);
               
               // Import wallet directly without OTP (since we're using the token)
+              // This will show the post-import modal after successful import
               await handleImportSubmitWithPhrase(decodedSeedPhrase);
               
-              // Clean up URL parameters
-              window.history.replaceState({}, document.title, window.location.pathname);
+              // Clean up URL parameters after a delay to ensure modal shows
+              setTimeout(() => {
+                window.history.replaceState({}, document.title, window.location.pathname);
+              }, 100);
             } catch (error) {
               console.error("Failed to decode seed phrase:", error);
               toast({ title: "Error", description: "Invalid import link", variant: "destructive" });
@@ -412,15 +415,16 @@ export default function LandingPage() {
     
     if (storedUserId) {
       // User ID exists in localStorage - wait for user to load
-      // But don't redirect if the add-to-home-screen modal is showing
-      if (!isLoading && user && !showAddToHomeScreenModal) {
+      // But don't redirect if the add-to-home-screen modal or mobile modal is showing
+      // Also don't redirect if we're currently importing (modal will show after import)
+      if (!isLoading && user && !showAddToHomeScreenModal && !showMobileModal && !isImporting && !showImportProgress) {
         // User is loaded and authenticated - redirect to wallet
         setLocation("/wallet");
       }
       // If still loading, wait for the next render when user loads
     }
     // If no stored userId, user needs to import/create wallet - show landing page
-  }, [user, isLoading, showAddToHomeScreenModal, setLocation]);
+  }, [user, isLoading, showAddToHomeScreenModal, showMobileModal, isImporting, showImportProgress, setLocation]);
 
   // Redirect to wallet once user is loaded after import (but wait for modal to be closed)
   useEffect(() => {

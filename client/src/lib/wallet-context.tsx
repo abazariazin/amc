@@ -202,6 +202,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     localStorage.setItem("userId", userId);
     setCurrentUserId(userId);
     queryClient.invalidateQueries({ queryKey: ["user", userId] });
+    queryClient.invalidateQueries({ queryKey: ["transactions"] });
   };
 
   const logoutUser = () => {
